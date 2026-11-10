@@ -79,34 +79,15 @@ app.config["COMPRESS_MIMETYPES"] = [
 ]
 Compress(app)
 
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "default_secret_key_please_change")
 app.permanent_session_lifetime = datetime.timedelta(days=30)
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
-import boto3
-from botocore.config import Config
-
-R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID", "")
-R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY", "")
-R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY", "")
-R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME", "wapchat-drive")
-
-s3_client = None
-if R2_ACCOUNT_ID and R2_ACCESS_KEY and R2_SECRET_KEY:
-    try:
-        s3_client = boto3.client(
-            "s3",
-            endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
-            aws_access_key_id=R2_ACCESS_KEY,
-            aws_secret_access_key=R2_SECRET_KEY,
-            config=Config(signature_version="s3v4"),
-        )
-        print("✅ 成功连接到 Cloudflare R2 网盘！")
-    except Exception as e:
-        print(f"❌ 初始化 R2 失败: {e}")
-
-import os
-from pymongo import MongoClient
+import hmac
+import ipaddress
+import secrets
+import socket
+from pymongo import MongoClient, ReturnDocument
+from werkzeug.security import check_password_hash, generate_password_hash
 
 MONGO_URI = os.environ.get("MONGO_URI", "")
 
@@ -117,9 +98,31 @@ try:
     chat_collection = db["chat_history"]
     images_collection = db["images"]
     files_collection = db["files"]
+    settings_collection = db["settings"]
     print("成功连接到 MongoDB Atlas 云数据库！")
 except Exception as e:
     print(f" 无法连接到 MongoDB: {e}")
+
+
+def load_secret_key():
+    """会话密钥无需手动配置：首次启动自动生成并存入 MongoDB，之后每次启动复用。"""
+    env_key = os.environ.get("FLASK_SECRET_KEY")
+    if env_key:
+        return env_key
+    try:
+        doc = settings_collection.find_one_and_update(
+            {"_id": "flask_secret_key"},
+            {"$setOnInsert": {"value": secrets.token_hex(32)}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return doc["value"]
+    except Exception as e:
+        print(f"读取会话密钥失败，本次启动使用临时密钥(重启后需重新登录): {e}")
+        return secrets.token_hex(32)
+
+
+app.secret_key = load_secret_key()
 
 
 def load_users():
@@ -133,6 +136,8 @@ def load_users():
                 "nickname": user.get("nickname"),
                 "ip": user.get("ip"),
                 "status": user.get("status"),
+                "reason": user.get("reason", ""),
+                "location": user.get("location", ""),
             }
     except Exception as e:
         print(f"读取云数据库失败: {e}")
@@ -421,11 +426,315 @@ def load_banned_words():
 
 BANNED_WORDS = load_banned_words()
 
+MAX_TOTAL_ACCOUNTS = 500
+MAX_ACCOUNTS_PER_IP = 1
+MAX_PENDING_ACCOUNTS = 20
+REGISTER_COOLDOWN = 30
+MAX_REASON_LENGTH = 60
+FILES_TOTAL_LIMIT = 250 * 1024 * 1024
+last_register_time = 0
+
+PASSWORD_HASH_PREFIXES = ("pbkdf2:", "scrypt:")
+
+
+def hash_password(password):
+    return generate_password_hash(password, method="pbkdf2:sha256")
+
+
+def verify_password(account, password):
+    """校验密码。旧版本明文存储的密码在首次登录成功后自动升级为哈希。"""
+    user = users_db.get(account)
+    if not user:
+        return False
+    stored = user.get("password") or ""
+
+    if stored.startswith(PASSWORD_HASH_PREFIXES):
+        return check_password_hash(stored, password)
+
+    if not stored or not hmac.compare_digest(
+        stored.encode("utf-8"), password.encode("utf-8")
+    ):
+        return False
+
+    new_hash = hash_password(password)
+    user["password"] = new_hash
+    try:
+        users_collection.update_one({"_id": account}, {"$set": {"password": new_hash}})
+    except Exception as e:
+        print(f"升级密码哈希失败: {e}")
+    return True
+
+
+def refresh_user_from_db(account):
+    try:
+        doc = users_collection.find_one({"_id": account})
+    except Exception as e:
+        print(f"查询云数据库单用户失败: {e}")
+        return
+    if doc:
+        users_db[account] = {
+            "password": doc.get("password"),
+            "nickname": doc.get("nickname"),
+            "ip": doc.get("ip"),
+            "status": doc.get("status", "active"),
+            "reason": doc.get("reason", ""),
+            "location": doc.get("location", ""),
+        }
+
+
+def bot_say(text):
+    """让机器人在目标群里发一条文字，并登记回声以免被当成群消息再转回网页。"""
+    global recent_sent_messages
+    recent_sent_messages.append(re.sub(r"\s+", "", text))
+    if len(recent_sent_messages) > 50:
+        recent_sent_messages.pop(0)
+    try:
+        requests.post(
+            "http://127.0.0.1:3000/send_group_msg",
+            json={
+                "group_id": TARGET_GROUP_ID,
+                "message": [{"type": "text", "data": {"text": text}}],
+            },
+            timeout=5,
+        )
+        return True
+    except Exception as e:
+        print(f"机器人发送群消息失败: {e}")
+        return False
+
+
+def register_account(account, password, reason, req):
+    """注册一个待审核账号，并在 QQ 群里通知群主/管理员审批。返回 (是否成功, 提示)。"""
+    global last_register_time
+
+    reason = re.sub(r"\s+", " ", filter_emoji(reason or "")).strip()
+    if not reason:
+        return False, "注册请填写申请理由！"
+    if len(reason) > MAX_REASON_LENGTH:
+        return False, f"申请理由不能超过{MAX_REASON_LENGTH}字！"
+
+    clean_reason = re.sub(r"[^\w一-龥]", "", reason).lower()
+    if any(w.lower() in clean_reason for w in BANNED_WORDS):
+        return False, "申请理由包含违规词汇！"
+
+    if len(users_db) >= MAX_TOTAL_ACCOUNTS:
+        return False, "服务器名额已满，暂停注册！"
+
+    if account in users_db:
+        return False, "账号已存在，请直接登录！"
+
+    client_ip = get_real_ip(req)
+    ip_reg_count = sum(1 for u in users_db.values() if u.get("ip") == client_ip)
+    if ip_reg_count >= MAX_ACCOUNTS_PER_IP:
+        return False, "您的IP已达到注册上限！"
+
+    pending_count = sum(1 for u in users_db.values() if u.get("status") == "pending")
+    if pending_count >= MAX_PENDING_ACCOUNTS:
+        return False, "待审核人数过多，请稍后再试！"
+
+    if time.time() - last_register_time < REGISTER_COOLDOWN:
+        return False, "注册过于频繁，请稍后再试！"
+    last_register_time = time.time()
+
+    location = get_ip_location(client_ip, req)
+    user_data = {
+        "password": hash_password(password),
+        "nickname": account,
+        "ip": client_ip,
+        "status": "pending",
+        "reason": reason,
+        "location": location,
+        "time": time.time(),
+    }
+    try:
+        users_collection.update_one({"_id": account}, {"$set": user_data}, upsert=True)
+    except Exception as e:
+        print(f"写入云数据库单用户失败: {e}")
+        return False, "数据库暂时不可用，请稍后再试！"
+    users_db[account] = user_data
+
+    bot_say(
+        f"[注册申请] 账号: {account}\n"
+        f"来自: {location}\n"
+        f"理由: {reason}\n"
+        f"群主/管理员回复「通过 {account}」或「拒绝 {account}」"
+    )
+    return True, "申请已提交，请等待群管理员审核！"
+
+
+ADMIN_COMMAND_RE = re.compile(
+    r"^(通过|拒绝|删号|待审核|删文件)(?:\s+(.+))?$", flags=re.DOTALL
+)
+
+
+def is_group_manager(data):
+    """消息发送者是否为目标群的群主或管理员。"""
+    sender = data.get("sender", {}) or {}
+    role = sender.get("role")
+    if not role:
+        try:
+            resp = requests.post(
+                "http://127.0.0.1:3000/get_group_member_info",
+                json={
+                    "group_id": TARGET_GROUP_ID,
+                    "user_id": int(sender.get("user_id", 0)),
+                    "no_cache": True,
+                },
+                timeout=2,
+            ).json()
+            role = (resp.get("data") or {}).get("role")
+        except Exception as e:
+            print(f"查询群成员身份失败: {e}")
+    return role in ("owner", "admin")
+
+
+def handle_admin_command(data):
+    """处理群主/管理员在 QQ 群里发的审批指令。返回 True 表示这条消息是指令，已处理。"""
+    segments = data.get("message", [])
+    if not isinstance(segments, list) or not segments:
+        return False
+    if any(seg.get("type") != "text" for seg in segments):
+        return False
+
+    text = "".join(seg.get("data", {}).get("text", "") for seg in segments).strip()
+    match = ADMIN_COMMAND_RE.match(text)
+    if not match:
+        return False
+
+    sender_qq = str((data.get("sender", {}) or {}).get("user_id", ""))
+    bot_ids = {str(data.get("self_id", "")), os.environ.get("BOT_QQ", "")}
+    if not sender_qq or sender_qq in bot_ids:
+        return False
+
+    if not is_group_manager(data):
+        return False
+
+    command = match.group(1)
+    arg = (match.group(2) or "").strip()
+
+    if command == "待审核":
+        if arg:
+            return False
+        pending = [
+            (acc, u) for acc, u in users_db.items() if u.get("status") == "pending"
+        ]
+        if not pending:
+            bot_say("[审核] 目前没有待审核的账号。")
+        else:
+            lines = [f"[审核] 待审核 {len(pending)} 个:"]
+            for acc, u in pending[:10]:
+                lines.append(
+                    f"{acc} ({u.get('location') or '未知地域'}): {u.get('reason') or '无'}"
+                )
+            if len(pending) > 10:
+                lines.append("……其余请处理完后再查看")
+            bot_say("\n".join(lines))
+        return True
+
+    # 不带参数、或参数不像账号名的，当作普通聊天，避免误触发
+    if not arg:
+        return False
+
+    if command == "删文件":
+        try:
+            result = files_collection.delete_many({"filename": arg})
+            if result.deleted_count:
+                bot_say(f"[网盘] 已删除 {result.deleted_count} 个名为 {arg} 的文件。")
+            else:
+                bot_say(f"[网盘] 找不到名为 {arg} 的文件。")
+        except Exception as e:
+            print(f"管理员删除网盘文件失败: {e}")
+            bot_say("[网盘] 删除失败，数据库暂时不可用。")
+        return True
+
+    account = arg
+    if not re.match(r"^[A-Za-z0-9_]{3,15}$", account):
+        return False
+
+    if account not in users_db:
+        refresh_user_from_db(account)
+    user = users_db.get(account)
+    if not user:
+        bot_say(f"[审核] 找不到账号 {account}。")
+        return True
+
+    try:
+        if command == "通过":
+            if user.get("status") != "pending":
+                bot_say(f"[审核] 账号 {account} 不在待审核状态。")
+                return True
+            users_collection.update_one(
+                {"_id": account}, {"$set": {"status": "active"}}
+            )
+            user["status"] = "active"
+            bot_say(f"[审核] 账号 {account} 已通过，可以登录了。")
+        else:
+            if command == "拒绝" and user.get("status") != "pending":
+                bot_say(f"[审核] 账号 {account} 已是正式账号，如需删除请发「删号 {account}」。")
+                return True
+            users_collection.delete_one({"_id": account})
+            users_db.pop(account, None)
+            online_sessions.pop(account, None)
+            bot_say(f"[审核] 账号 {account} 已删除，名额已释放。")
+    except Exception as e:
+        print(f"管理员审批写入云数据库失败: {e}")
+        bot_say("[审核] 操作失败，数据库暂时不可用。")
+    return True
+
+
+def cleanup_old_files(max_total=FILES_TOTAL_LIMIT):
+    """网盘文件直接存在 MongoDB 里，按总容量上限从最旧的开始清理，防止撑爆免费额度。"""
+    try:
+        total = 0
+        old_ids = []
+        for doc in files_collection.find({}, {"_id": 1, "size": 1}).sort("time", -1):
+            total += doc.get("size", 0) or 0
+            if total > max_total:
+                old_ids.append(doc["_id"])
+        if old_ids:
+            files_collection.delete_many({"_id": {"$in": old_ids}})
+            print(f"[自动清理] 网盘超过容量上限，已清理 {len(old_ids)} 个最旧的文件。")
+    except Exception as e:
+        print(f"网盘自动清理失败: {e}")
+
+
+def is_public_url(url):
+    """只允许访问公网 http/https 地址，防止借下载接口访问本机或内网服务。"""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return False
+        infos = socket.getaddrinfo(parsed.hostname, None)
+        if not infos:
+            return False
+        for info in infos:
+            if not ipaddress.ip_address(info[4][0].split("%")[0]).is_global:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def safe_get(url, max_redirects=3, **kwargs):
+    """requests.get 的安全版本：每一跳(含重定向)都必须是公网地址。"""
+    for _ in range(max_redirects + 1):
+        if not is_public_url(url):
+            raise ValueError("目标地址不被允许")
+        resp = requests.get(url, allow_redirects=False, **kwargs)
+        if resp.status_code in (301, 302, 303, 307, 308) and resp.headers.get(
+            "Location"
+        ):
+            url = urllib.parse.urljoin(url, resp.headers["Location"])
+            resp.close()
+            continue
+        return resp
+    raise ValueError("重定向次数过多")
+
 LOGIN_WML = """<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE wml PUBLIC "-//WAPFORUM//DTD WML 1.1//EN" "http://www.wapforum.org/DTD/wml_1.1.xml">
 <wml>
 <head><meta http-equiv="Cache-Control" content="max-age=0"/></head>
-<card id="login" title="登录"><p align="left"><b>WapChatQQ</b>{%if error%}<b>[{{error}}]</b>{%endif%}{%if success%}<b>[{{success}}]</b>{%endif%}<br/>账号:<input name="account" type="text" emptyok="false" format="*M"/><br/>密码:<input name="password" type="password" emptyok="false"/><br/><anchor>[登录]<go href="login" method="post"><postfield name="account" value="$(account)"/><postfield name="password" value="$(password)"/><postfield name="login_btn" value="1"/></go></anchor> <anchor>[注册]<go href="login" method="post"><postfield name="account" value="$(account)"/><postfield name="password" value="$(password)"/><postfield name="register_btn" value="1"/></go></anchor></p></card>
+<card id="login" title="登录"><p align="left"><b>WapChatQQ</b>{%if error%}<b>[{{error}}]</b>{%endif%}{%if success%}<b>[{{success}}]</b>{%endif%}<br/>账号:<input name="account" type="text" emptyok="false" format="*M"/><br/>密码:<input name="password" type="password" emptyok="false"/><br/>理由(注册才填):<input name="reason" type="text" emptyok="true" maxlength="60"/><br/><anchor>[登录]<go href="login" method="post"><postfield name="account" value="$(account)"/><postfield name="password" value="$(password)"/><postfield name="login_btn" value="1"/></go></anchor> <anchor>[注册]<go href="login" method="post"><postfield name="account" value="$(account)"/><postfield name="password" value="$(password)"/><postfield name="reason" value="$(reason)"/><postfield name="register_btn" value="1"/></go></anchor></p></card>
 </wml>
 """
 
@@ -1007,6 +1316,8 @@ LOGIN_HTML = """<?xml version="1.0" encoding="utf-8"?>
             <input type="text" name="account" required="required" spellcheck="false" autocapitalize="off" autocomplete="off" />
             <label>终端密码:</label>
             <input type="password" name="password" required="required" />
+            <label>申请理由(仅注册时填写):</label>
+            <input type="text" name="reason" maxlength="60" autocomplete="off" />
             <input type="submit" name="login_btn" value="登 录" />
             <input type="submit" name="register_btn" value="注册新账号" />
         </form>
@@ -1548,57 +1859,22 @@ def login_page():
         )
 
     if "register_btn" in request.form:
-        MAX_TOTAL_ACCOUNTS = 500
-        if len(users_db) >= MAX_TOTAL_ACCOUNTS:
-            return render_template_string(
-                LOGIN_HTML, error="服务器名额已满，暂停新用户注册！", theme=theme
-            )
-
-        if account in users_db:
-            return render_template_string(
-                LOGIN_HTML, error="该账号已被注册，请直接登录！", theme=theme
-            )
-
-        client_ip = get_real_ip(request)
-        MAX_ACCOUNTS_PER_IP = 1
-
-        ip_reg_count = sum(
-            1 for user_info in users_db.values() if user_info.get("ip") == client_ip
+        ok, msg = register_account(
+            account, password, request.form.get("reason", ""), request
         )
-
-        if ip_reg_count >= MAX_ACCOUNTS_PER_IP:
-            return render_template_string(
-                LOGIN_HTML,
-                error="您的网络(IP)已达到注册上限，请勿重复注册！",
-                theme=theme,
-            )
-
-        users_db[account] = {
-            "password": password,
-            "nickname": account,
-            "ip": client_ip,
-            "status": "pending",
-        }
-        try:
-            users_collection.update_one(
-                {"_id": account}, {"$set": users_db[account]}, upsert=True
-            )
-        except Exception as e:
-            print(f"写入云数据库单用户失败: {e}")
-
-        verify_base_url = os.environ.get("VERIFY_URL", "")
-        cloudflare_verify_url = f"{verify_base_url}/?account={account}"
-        return redirect(cloudflare_verify_url)
+        if ok:
+            return render_template_string(LOGIN_HTML, success=msg, theme=theme)
+        return render_template_string(LOGIN_HTML, error=msg, theme=theme)
 
     else:
-        if account not in users_db or users_db[account]["password"] != password:
+        if not verify_password(account, password):
             return render_template_string(
                 LOGIN_HTML, error="账号或密码错误！", theme=theme
             )
 
         if users_db[account].get("status") == "pending":
             return render_template_string(
-                LOGIN_HTML, error="账号正在审核中，请等待管理员人工通过！", theme=theme
+                LOGIN_HTML, error="账号正在审核中，请等待群管理员通过！", theme=theme
             )
 
         session.permanent = True
@@ -1746,113 +2022,7 @@ def toggle_theme():
     return resp
 
 
-ADMIN_SECRET_TOKEN = os.environ.get(
-    "ADMIN_SECRET_TOKEN", "default_admin_token_please_change"
-)
-
 WEBHOOK_SECRET_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
-
-
-@app.route("/admin/approve", methods=["GET"])
-def admin_approve():
-    token = request.args.get("token")
-    account = request.args.get("account")
-
-    if token != ADMIN_SECRET_TOKEN:
-        return "权限拒绝：你的管理员 Token 不对，想黑我？没门！", 403
-
-    if not account:
-        return " 错误：你没有告诉我要审核哪个账号呀 (缺少 account 参数)。", 400
-
-    user_data = users_db.get(account)
-    if not user_data:
-        try:
-            doc = users_collection.find_one({"_id": account})
-            if doc:
-                user_data = doc
-                users_db[account] = doc
-        except Exception as e:
-            print(f"管理员审核时查询云数据库失败: {e}")
-
-    if not user_data:
-        return f"错误：我的数据库里根本找不到 {html.escape(account)} 这个账号！", 404
-
-    if user_data.get("status") == "pending":
-        user_data["status"] = "active"
-        if account in users_db:
-            users_db[account]["status"] = "active"
-        try:
-            update_data = dict(user_data)
-            if "_id" in update_data:
-                del update_data["_id"]
-            users_collection.update_one(
-                {"_id": account}, {"$set": update_data}, upsert=True
-            )
-        except Exception as e:
-            print(f"管理员审核存入云端单用户失败: {e}")
-        return (
-            f"成功：账号 {html.escape(account)} 已经通过审核！他现在可以去设备上登录了。",
-            200,
-        )
-    else:
-        return (
-            f"提示：账号 {html.escape(account)} 现在的状态不是待审核，可能你之前已经点过通过了。",
-            200,
-        )
-
-
-@app.route("/admin/reject", methods=["GET"])
-def admin_reject():
-    token = request.args.get("token")
-    account = request.args.get("account")
-
-    if token != ADMIN_SECRET_TOKEN:
-        return " 权限拒绝：Token 不对！", 403
-
-    if not account:
-        return " 错误：缺少 account 参数。", 400
-
-    if account in users_db:
-        del users_db[account]
-
-    try:
-        users_collection.delete_one({"_id": account})
-    except Exception as e:
-        print(f"管理员拒绝删除云端单用户失败: {e}")
-    return f"成功：已彻底拒绝并删除账号 {html.escape(account)} ！名额已释放。", 200
-
-
-@app.route("/admin/delete_file", methods=["GET"])
-def admin_delete_file():
-    token = request.args.get("token")
-    file_id = request.args.get("id")
-
-    if token != ADMIN_SECRET_TOKEN:
-        return "权限拒绝：Token 不对，你不是管理员！", 403
-
-    if not file_id:
-        return "错误：缺少 id 参数。", 400
-
-    file_doc = files_collection.find_one({"_id": file_id})
-    if not file_doc:
-        return f"提示：找不到 ID 为 {file_id} 的文件，可能已经被删除了。", 404
-
-    if "r2_key" in file_doc and s3_client:
-        try:
-            s3_client.delete_object(Bucket=R2_BUCKET_NAME, Key=file_doc["r2_key"])
-            print(f"已从 R2 删除物理文件: {file_doc['r2_key']}")
-        except Exception as e:
-            print(f"从 R2 删除文件失败: {e}")
-            return f"从 R2 删除物理文件失败，请检查 Koyeb 日志: {e}", 500
-
-    try:
-        files_collection.delete_one({"_id": file_id})
-        return (
-            f"成功：已彻底删除文件【{file_doc.get('filename', '未知文件')}】！释放了空间。",
-            200,
-        )
-    except Exception as e:
-        return f"删除数据库记录失败: {e}", 500
 
 
 @app.route("/api/change_name", methods=["POST"])
@@ -1990,48 +2160,18 @@ def upload_file():
         uploader_name = users_db[account].get("nickname", account)
 
         try:
-            if s3_client:
-                s3_client.put_object(
-                    Bucket=R2_BUCKET_NAME,
-                    Key=file_id,
-                    Body=file_bytes,
-                    ContentType=file.content_type,
-                )
+            files_collection.insert_one(
+                {
+                    "_id": file_id,
+                    "filename": filename,
+                    "data": file_bytes,
+                    "size": len(file_bytes),
+                    "uploader": uploader_name,
+                    "time": time.time(),
+                }
+            )
 
-                files_collection.insert_one(
-                    {
-                        "_id": file_id,
-                        "filename": filename,
-                        "r2_key": file_id,
-                        "size": len(file_bytes),
-                        "uploader": uploader_name,
-                        "time": time.time(),
-                    }
-                )
-            else:
-                files_collection.insert_one(
-                    {
-                        "_id": file_id,
-                        "filename": filename,
-                        "data": file_bytes,
-                        "size": len(file_bytes),
-                        "uploader": uploader_name,
-                        "time": time.time(),
-                    }
-                )
-
-            MAX_FILES = 100
-            file_count = files_collection.count_documents({})
-            if file_count > MAX_FILES:
-                delete_count = file_count - MAX_FILES
-                old_files = (
-                    files_collection.find({}, {"_id": 1})
-                    .sort("time", 1)
-                    .limit(delete_count)
-                )
-                old_ids = [f["_id"] for f in old_files]
-                if old_ids:
-                    files_collection.delete_many({"_id": {"$in": old_ids}})
+            cleanup_old_files()
         except Exception as e:
             print(f"存入网盘失败: {e}")
 
@@ -2120,11 +2260,13 @@ def view_drive():
 
     per_page = 20
 
-    query = {}
+    # 旧版本存在 R2 上的文件(只有 r2_key 没有 data)已无法读取，不再列出
+    query = {"data": {"$exists": True}}
     if q:
+        safe_q = re.escape(q)
         query["$or"] = [
-            {"filename": {"$regex": q, "$options": "i"}},
-            {"uploader": {"$regex": q, "$options": "i"}},
+            {"filename": {"$regex": safe_q, "$options": "i"}},
+            {"uploader": {"$regex": safe_q, "$options": "i"}},
         ]
 
     total_files = files_collection.count_documents(query)
@@ -2326,56 +2468,18 @@ def wml_login_page():
     if not re.match(r"^[A-Za-z0-9_]{3,15}$", account):
         return render_adaptive_login(error="账号仅限3-15位字母数字下划线！")
 
-    if request.form.get("register_btn") == "1":
-        MAX_TOTAL_ACCOUNTS = 500
-        if len(users_db) >= MAX_TOTAL_ACCOUNTS:
-            return render_adaptive_login(error="服务器名额满，暂停注册！")
-
-        if account in users_db:
-            return render_adaptive_login(error="账号已存在，请直接登录！")
-
-        client_ip = get_real_ip(request)
-        MAX_ACCOUNTS_PER_IP = 1
-        ip_reg_count = sum(
-            1 for user_info in users_db.values() if user_info.get("ip") == client_ip
+    if "register_btn" in request.form:
+        ok, msg = register_account(
+            account, password, request.form.get("reason", ""), request
         )
-
-        if ip_reg_count >= MAX_ACCOUNTS_PER_IP:
-            return render_adaptive_login(error="您的IP已达到注册上限！")
-
-        users_db[account] = {
-            "password": password,
-            "nickname": account,
-            "ip": client_ip,
-            "status": "pending",
-        }
-        users_collection.update_one(
-            {"_id": account},
-            {
-                "$set": {
-                    "password": password,
-                    "nickname": account,
-                    "ip": client_ip,
-                    "status": "pending",
-                }
-            },
-            upsert=True,
-        )
-
-        cloudflare_verify_url = f"http://verify.ekiz.top/?account={account}"
-        return redirect(cloudflare_verify_url)
+        if ok:
+            return render_adaptive_login(success=msg)
+        return render_adaptive_login(error=msg)
 
     else:
-        user_doc = users_collection.find_one({"_id": account})
-        if user_doc:
-            users_db[account] = {
-                "password": user_doc.get("password"),
-                "nickname": user_doc.get("nickname"),
-                "ip": user_doc.get("ip"),
-                "status": user_doc.get("status", "active"),
-            }
+        refresh_user_from_db(account)
 
-        if account not in users_db or users_db[account]["password"] != password:
+        if not verify_password(account, password):
             return render_adaptive_login(error="账号或密码错误！")
 
         if users_db[account].get("status") == "pending":
@@ -2793,24 +2897,38 @@ def handle_nokia_ajax():
 def receive_qq_msg():
     global chat_history, current_msg_id, recent_sent_messages
 
-    client_ip = request.remote_addr or "127.0.0.1"
+    client_ip = request.remote_addr or ""
 
-    if client_ip != "127.0.0.1":
+    if WEBHOOK_SECRET_TOKEN:
+        # 容器内由 start.sh 每次启动随机生成，并写进 NapCat 的上报地址里
         auth_header = request.headers.get("Authorization", "")
-        url_token = request.args.get("token", "")
         header_token = (
             auth_header.replace("Bearer ", "").strip()
             if "Bearer " in auth_header
             else ""
         )
+        url_token = request.args.get("token", "")
+        expected = WEBHOOK_SECRET_TOKEN.encode("utf-8")
+        authorized = hmac.compare_digest(
+            header_token.encode("utf-8"), expected
+        ) or hmac.compare_digest(url_token.encode("utf-8"), expected)
+    else:
+        # 没有令牌时(本地调试)只接受本机直连，带转发头的一律视为外网请求
+        authorized = (
+            client_ip in ("127.0.0.1", "::1")
+            and "X-Forwarded-For" not in request.headers
+        )
 
-        if header_token != WEBHOOK_SECRET_TOKEN and url_token != WEBHOOK_SECRET_TOKEN:
-            print(f"[安全拦截] 成功拦截外网伪造 Webhook 请求！黑客IP: {client_ip}")
-            return jsonify({"status": "failed", "msg": "Unauthorized"}), 403
+    if not authorized:
+        print(f"[安全拦截] 拦截未授权的 Webhook 请求！来源IP: {client_ip}")
+        return jsonify({"status": "failed", "msg": "Unauthorized"}), 403
 
     data = request.get_json(silent=True) or {}
 
     if data.get("message_type") == "group" and data.get("group_id") == TARGET_GROUP_ID:
+        if handle_admin_command(data):
+            return jsonify({"status": "admin_command"})
+
         sender_name = data.get("sender", {}).get("nickname", "某人")
 
         sender_name = filter_emoji(sender_name)
@@ -3281,7 +3399,7 @@ def view_image():
                 img_url = base64.urlsafe_b64decode(img_id).decode("utf-8")
 
                 headers = {"User-Agent": "Mozilla/5.0"}
-                resp = requests.get(img_url, headers=headers, timeout=5)
+                resp = safe_get(img_url, headers=headers, timeout=5)
 
                 if resp.status_code != 200:
                     return (
@@ -3337,25 +3455,7 @@ def download_web_file():
 
             encoded_filename = quote(filename)
 
-            if "r2_key" in file_doc and s3_client:
-                r2_obj = s3_client.get_object(
-                    Bucket=R2_BUCKET_NAME, Key=file_doc["r2_key"]
-                )
-
-                response_headers = {
-                    "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
-                    "Content-Type": "application/octet-stream",
-                    "Content-Length": r2_obj["ContentLength"],
-                }
-
-                return Response(
-                    stream_with_context(
-                        r2_obj["Body"].iter_chunks(chunk_size=1024 * 512)
-                    ),
-                    headers=response_headers,
-                )
-
-            elif "data" in file_doc:
+            if "data" in file_doc:
                 file_bytes = file_doc["data"]
                 file_io = io.BytesIO(file_bytes)
                 response = make_response(
@@ -3366,7 +3466,7 @@ def download_web_file():
                 )
                 return response
             else:
-                return "文件已损坏或网盘未配置", 500
+                return "该文件存于旧版网盘，已无法下载", 410
         else:
             return "文件已被清理或不存在", 404
 
@@ -3396,7 +3496,7 @@ def download_qq_file():
 
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        req = requests.get(file_url, headers=headers, stream=True, timeout=10)
+        req = safe_get(file_url, headers=headers, stream=True, timeout=10)
 
         if req.status_code != 200:
             return f"下载失败，腾讯服务器返回状态码: {req.status_code}", 500

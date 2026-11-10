@@ -5,4 +5,3 @@ pymongo[srv]
 Pillow
 emoji
 Flask-Compress
-boto3
