@@ -89,7 +89,7 @@ docker run -d --name wapchat-qq --restart=always --hostname wapchat-qq --mac-add
 
 老手机不支持现代 HTTPS，需要在前面加一层 [cf-legacy-proxy](https://github.com/amahteru/cf-legacy-proxy) 这类 HTTP 反代，把 `TARGET_DOMAIN` 设为本站的域名。本站按反代传来的请求头识别访客：
 
-- **访客 IP**：取 `X-Forwarded-For` 的第一个地址 (反代会把它设为访客真实 IP)，用于 IP 属地、注册 IP 限制和发言频率限制。
+- **访客 IP**：取 `X-Forwarded-For` 的第一个地址 (反代会把它设为访客真实 IP)，用于 IP 属地和注册 IP 限制。
 
 ### IP 属地
 

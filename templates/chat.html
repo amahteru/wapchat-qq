@@ -92,7 +92,7 @@
             <div style="overflow:hidden; margin-bottom:2px;">
                 <b style="float:left;">{{ msg.sender_title }}:</b>
                 {% if msg.pure_sender %}
-                {% set safe_name = msg.pure_sender | replace("'", "") | replace('"', '') %}
+                {% set safe_name = msg.pure_sender | replace("'", "") | replace('"', '') | replace("\\", "") %}
                 <span style="float:right;">
                     <a href="javascript:atUser('{{ safe_name }}');" class="action-at">[@]</a>
                     <a href="javascript:replyMsg('{{ msg.id }}', '{{ safe_name }}');" class="action-reply">[回]</a>
@@ -274,12 +274,12 @@
 
             var actionLinks = '';
             if (pure_sender && msg_id) {
-                var safeName = pure_sender.replace(/['"]/g, '');
+                var safeName = pure_sender.replace(/['"\\]/g, '');
                 var atLink = '<a href="javascript:atUser(' + "'" + safeName + "'" + ');" class="action-at">[@]</a>';
                 var repLink = '&nbsp;<a href="javascript:replyMsg(' + "'" + msg_id + "'" + ', ' + "'" + safeName + "'" + ');" class="action-reply">[回]</a>';
                 actionLinks = '<span style="float:right;">' + atLink + repLink + '</span>';
             }
-            div.innerHTML = '<div style="overflow:hidden; margin-bottom:2px;"><b style="float:left;">' + sender_title + ':</b>' + actionLinks + '</div><div style="clear:both;">' + text.replace(/\n/g, '<br/>') + '</div>';
+            div.innerHTML = '<div style="overflow:hidden; margin-bottom:2px;"><b style="float:left;">' + sender_title + ':</b>' + actionLinks + '</div><div style="clear:both;">' + text + '</div>';
 
             if (chatBox.firstChild) {
                 chatBox.insertBefore(div, chatBox.firstChild);
@@ -308,8 +308,7 @@
                     }
                 }
                 if (m.id === undefined || m.id > lastMsgId) {
-                    var safeText = m.text.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF]/g, '');
-                    addMessage(m.sender_title, safeText, m.pure_sender, m.id);
+                    addMessage(m.sender_title, m.text, m.pure_sender, m.id);
                     if (m.id !== undefined) {
                         lastMsgId = m.id;
                         hasNewMessage = true;

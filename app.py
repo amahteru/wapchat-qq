@@ -415,7 +415,7 @@ def wml_index():
     if not account:
         return redirect("/wml/login")
 
-    notice = None
+    notice = next(iter(get_flashed_messages()), None)
     if request.method == "POST":
         notice = send_web_message(account, request.form.get("message", ""), request)
 
@@ -450,7 +450,9 @@ def wml_rename():
     if not account:
         return redirect("/wml/login")
 
-    set_nickname(account, request.form.get("new_name", ""))
+    _, error = set_nickname(account, request.form.get("new_name", ""))
+    if error:
+        flash(error)
     return redirect("/wml/")
 
 

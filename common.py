@@ -25,6 +25,7 @@ class LimitedDict(OrderedDict):
 
     def __setitem__(self, key, value):
         super().__setitem__(key, (value, time.time()))
+        self.move_to_end(key)
         if len(self) > self.max_size:
             self.popitem(last=False)
 
