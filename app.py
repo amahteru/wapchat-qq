@@ -15,7 +15,6 @@ from PIL import Image
 from collections import OrderedDict
 
 
-# 日志里有 emoji，Windows 中文控制台默认的 GBK 编码打印不出来会直接崩溃
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
@@ -101,7 +100,6 @@ WEBHOOK_SECRET_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 ONEBOT_URL = "http://127.0.0.1:3000"
 ACCOUNT_RE = re.compile(r"^[A-Za-z0-9_]{3,15}$")
 
-# MongoClient 是惰性连接，这里不会报错；真正连不上时由各处读写自行处理
 client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
 db = client["nokia_qq_db"]
 users_collection = db["users"]
@@ -112,7 +110,6 @@ settings_collection = db["settings"]
 
 
 def load_secret_key():
-    """会话密钥无需手动配置：首次启动自动生成并存入 MongoDB，之后每次启动复用。"""
     env_key = os.environ.get("FLASK_SECRET_KEY")
     if env_key:
         return env_key
@@ -133,7 +130,6 @@ app.secret_key = load_secret_key()
 
 
 def load_users():
-    """在应用启动时，从 MongoDB 把所有账号数据拉取到内存字典中"""
     temp_db = {}
     try:
         for user in users_collection.find():
@@ -172,13 +168,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def read_data_lines(filename):
-    """读取随代码一起发布的数据文件，返回去掉空行后的各行。"""
     with open(os.path.join(BASE_DIR, filename), encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip()]
 
 
 def load_qq_faces():
-    """QQ 原生小黄脸：编号 -> 名称(如 14 -> 微笑)。"""
     with open(os.path.join(BASE_DIR, "face_config.json"), encoding="utf-8") as f:
         faces = json.load(f).get("sysface", [])
     return {
@@ -189,7 +183,6 @@ def load_qq_faces():
 
 
 QQ_FACES = load_qq_faces()
-# 颜文字库每行是"颜文字<TAB>其他列"，只取第一列并去重
 KAOMOJI_LIST = list(
     dict.fromkeys(
         line.split("\t")[0] for line in read_data_lines("all_output_result_kmj.txt")
@@ -200,7 +193,6 @@ print(f"✅ 已加载 {len(QQ_FACES)} 个 QQ 表情、{len(KAOMOJI_LIST)} 个颜
 
 
 def load_chat_history():
-    """应用启动时，从 MongoDB 读取最新的 50 条聊天记录"""
     history = []
     max_id = 0
     try:
@@ -215,7 +207,6 @@ def load_chat_history():
 
 
 def save_chat_message(msg_dict):
-    """将单条消息存入 MongoDB，并自动清理旧数据防止撑爆免费容量"""
     try:
         chat_collection.insert_one(msg_dict.copy())
         if msg_dict["id"] > 5000:
@@ -225,10 +216,6 @@ def save_chat_message(msg_dict):
 
 
 def cleanup_old_images(max_limit=500):
-    """
-    检查图床容量，如果超过 max_limit，则清理最老旧的图片。
-    这里我们将默认上限改小为 500 张。
-    """
     try:
         img_count = images_collection.count_documents({})
         if img_count > max_limit:
@@ -250,7 +237,6 @@ def cleanup_old_images(max_limit=500):
 
 
 def to_jpeg_b64(source, max_width, max_height, quality):
-    """把图片等比缩小到指定尺寸以内并转成 JPEG，返回 base64 文本。"""
     img = Image.open(source)
     if img.mode != "RGB":
         img = img.convert("RGB")
@@ -262,7 +248,6 @@ def to_jpeg_b64(source, max_width, max_height, quality):
 
 
 def save_image(img_id, b64_data):
-    """把图片存进图床；同一张图重复保存只刷新时间。超出上限时清理最旧的。"""
     images_collection.replace_one(
         {"_id": img_id}, {"data": b64_data, "time": time.time()}, upsert=True
     )
@@ -374,7 +359,6 @@ ONLINE_TIMEOUT = 30
 
 
 def get_online_count():
-    """获取当前在线人数，并自动清理已经掉线的死记录"""
     current_time = time.time()
     expired_accounts = [
         acc
@@ -402,29 +386,24 @@ chat_lock = threading.Lock()
 
 @app.context_processor
 def inject_theme():
-    """所有页面模板都能直接用 theme，不必每个视图各传一遍。"""
     return {"theme": request.cookies.get("nokia_theme", "light")}
 
 
 def onebot(action, payload, timeout=3):
-    """调用本机 NapCat 的 OneBot 接口，返回解析后的 JSON。"""
     return requests.post(f"{ONEBOT_URL}/{action}", json=payload, timeout=timeout).json()
 
 
 def clean_qq_name(name):
-    """QQ 昵称/群名片转成老手机能显示的纯文字：emoji 和方括号内容都去掉。"""
     return re.sub(r"\[.*?\]", "", filter_emoji(name or "")).strip()
 
 
 def paginate(total, per_page):
-    """按请求里的 page 参数算出 (当前页, 总页数, 要跳过的条数)。"""
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(max(request.args.get("page", 1, type=int), 1), total_pages)
     return page, total_pages, (page - 1) * per_page
 
 
 def search_query(q, *fields):
-    """生成"任一字段包含 q"的 MongoDB 查询条件；q 按普通文字处理，不当正则。"""
     if not q:
         return {}
     pattern = {"$regex": re.escape(q), "$options": "i"}
@@ -432,13 +411,11 @@ def search_query(q, *fields):
 
 
 def upload_result(status, msg=""):
-    """上传接口的返回页：在隐藏 iframe 里回调父页面的 uploadCallback。"""
     safe_msg = json.dumps(str(msg)).replace("<", "&lt;")
     return f'<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("{status}", {safe_msg});/* ]]> */</script>'
 
 
 def wml_response(raw_content, target_card=None):
-    """老手机直接返回 WML；电脑和现代手机看不了 WML，转成 XHTML 再返回。"""
     if is_mobile_device(request):
         resp = make_response(raw_content)
         resp.headers["Content-Type"] = "text/vnd.wap.wml; charset=utf-8"
@@ -449,7 +426,6 @@ def wml_response(raw_content, target_card=None):
 
 
 def process_login_form():
-    """处理登录/注册表单(网页版和 WML 版共用)。返回 (是否已登录, 错误提示, 成功提示)。"""
     account = request.form.get("account", "").strip()
     password = request.form.get("password", "").strip()
 
@@ -470,13 +446,11 @@ def process_login_form():
 
 
 def has_banned_word(text):
-    """文字里是否含敏感词。先去掉标点和空格再比，防止用符号隔开来绕过。"""
     clean = re.sub(r"[^\w\u4e00-\u9fa5]", "", text).lower()
     return any(word.lower() in clean for word in BANNED_WORDS)
 
 
 def get_active_account():
-    """返回当前已登录且已通过审核的账号名，否则返回 None。"""
     account = session.get("nokia_account")
     user = users_db.get(account) if account else None
     if not user or user.get("status") == "pending":
@@ -485,7 +459,6 @@ def get_active_account():
 
 
 def add_chat_message(title, text, pure_sender, pure_text, **extra):
-    """生成一条聊天室消息：分配编号和时间，写入内存与数据库，内存里只保留最近 50 条。"""
     global current_msg_id
     with chat_lock:
         current_msg_id += 1
@@ -506,7 +479,6 @@ def add_chat_message(title, text, pure_sender, pure_text, **extra):
 
 
 def highlight_mentions(safe_text):
-    """把已转义文本里的 [@某人] 和 @某人 标成高亮。"""
     safe_text = re.sub(
         r"\[@([^\]]+)\]", r'<span class="action-reply">[@\1]</span>', safe_text
     )
@@ -518,14 +490,12 @@ def highlight_mentions(safe_text):
 
 
 def remember_echo(text):
-    """登记机器人即将发到群里的文字，Webhook 收到同样内容时不再转回网页。"""
     recent_sent_messages.append(re.sub(r"\s+", "", text))
     if len(recent_sent_messages) > 50:
         recent_sent_messages.pop(0)
 
 
 def clean_nickname(raw):
-    """校验并清洗昵称，返回 (昵称, 错误提示)。方括号一律去掉，防止昵称被当成 CQ 码执行。"""
     name = re.sub(r"\[.*?\]", "", filter_emoji((raw or "").strip()))
     name = re.sub(r"[\[\]\s]+", " ", name).strip()[:12].strip()
     if not name:
@@ -536,7 +506,6 @@ def clean_nickname(raw):
 
 
 def set_nickname(account, raw):
-    """修改昵称，返回 (新昵称, 错误提示)。"""
     name, error = clean_nickname(raw)
     if error:
         return None, error
@@ -549,14 +518,12 @@ def set_nickname(account, raw):
 
 
 def sign_url(url):
-    """给服务器自己生成的外部下载地址签名，下载接口只认带正确签名的地址。"""
     return hmac.new(
         app.secret_key.encode("utf-8"), url.encode("utf-8"), "sha256"
     ).hexdigest()[:32]
 
 
 def try_login(account, password):
-    """校验登录并写入会话。成功返回 None，失败返回错误提示。"""
     if login_failures.get(account, 0) >= MAX_LOGIN_FAILURES:
         return "失败次数过多，请5分钟后再试！"
 
@@ -585,7 +552,6 @@ def verify_password(account, password):
 
 
 def bot_say(text):
-    """让机器人在目标群里发一条文字，并登记回声以免被当成群消息再转回网页。"""
     remember_echo(text)
     try:
         onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": [{"type": "text", "data": {"text": text}}]}, timeout=5)
@@ -596,7 +562,6 @@ def bot_say(text):
 
 
 def register_account(account, password, reason, req):
-    """注册一个待审核账号，并在 QQ 群里通知群主/管理员审批。返回 (是否成功, 提示)。"""
     global last_register_time
 
     reason = re.sub(r"\s+", " ", filter_emoji(reason or "")).strip()
@@ -659,7 +624,6 @@ ADMIN_COMMAND_RE = re.compile(
 
 
 def is_group_manager(data):
-    """消息发送者是否为目标群的群主或管理员。"""
     sender = data.get("sender", {}) or {}
     role = sender.get("role")
     if not role:
@@ -672,7 +636,6 @@ def is_group_manager(data):
 
 
 def handle_admin_command(data):
-    """处理群主/管理员在 QQ 群里发的审批指令。返回 True 表示这条消息是指令，已处理。"""
     segments = data.get("message", [])
     if not isinstance(segments, list) or not segments:
         return False
@@ -714,7 +677,6 @@ def handle_admin_command(data):
             bot_say("\n".join(lines))
         return True
 
-    # 不带参数、或参数不像账号名的，当作普通聊天，避免误触发
     if not arg:
         return False
 
@@ -764,7 +726,6 @@ def handle_admin_command(data):
 
 
 def cleanup_old_files(max_total=FILES_TOTAL_LIMIT):
-    """网盘文件直接存在 MongoDB 里，按总容量上限从最旧的开始清理，防止撑爆免费额度。"""
     try:
         total = 0
         old_ids = []
@@ -780,7 +741,6 @@ def cleanup_old_files(max_total=FILES_TOTAL_LIMIT):
 
 
 def send_web_message(account, raw_text, req):
-    """把网页/WML 用户的一条发言转发到 QQ 群并记入聊天室。成功返回 None，被拦截返回提示文字。"""
     global global_last_send_time
 
     msg_text = filter_emoji((raw_text or "").strip())
@@ -839,7 +799,6 @@ def send_web_message(account, raw_text, req):
 
             reply_prefix_web = f'<span class="reply-text">[回复 @{html.escape(t_sender)}: {html.escape(t_text)}]</span><br/>'
 
-    # 每个被 @ 的名字只查一次：QQ 侧换成真正的 @，回声侧换成对方的群名片
     mention_pattern = r"\[@([^\]]+)\]|(?<![\w.-])@([\w\u4e00-\u9fa5·_-]+)"
     mentions = {}
     for match in re.finditer(mention_pattern, clean_text):
@@ -1057,7 +1016,6 @@ def view_emojis():
     if not get_active_account():
         return redirect(url_for("login_page"))
 
-    # 每页个数由聊天页按屏幕大小算好放在 cookie 里
     try:
         per_page = min(max(int(request.cookies.get("emoji_limit", 40)), 1), 500)
     except ValueError:
@@ -1189,7 +1147,6 @@ def upload_file():
         local_port = os.environ.get("PORT", 7860)
         download_url = f"http://127.0.0.1:{local_port}/api/internal_download/{file_id}"
 
-        # 机器人通过内部地址回来取文件；无论成败都要释放这份内存副本
         internal_file_cache[file_id] = {"bytes": file_bytes, "name": filename}
         try:
             resp_data = onebot("upload_group_file", {"group_id": TARGET_GROUP_ID, "file": download_url, "name": filename}, timeout=60)
@@ -1401,7 +1358,6 @@ def wml_index():
     if request.method == "POST":
         notice = send_web_message(account, request.form.get("message", ""), request)
 
-        # 电脑端用 POST-重定向-GET 避免刷新时重复提交；有拦截提示时直接渲染以便显示
         if not notice and not is_mobile_device(request):
             return redirect("/wml/")
 
@@ -1515,13 +1471,11 @@ def receive_qq_msg():
     client_ip = request.remote_addr or ""
 
     if WEBHOOK_SECRET_TOKEN:
-        # 容器内由 start.sh 每次启动随机生成，并写进 NapCat 的上报地址里
         authorized = hmac.compare_digest(
             request.args.get("token", "").encode("utf-8"),
             WEBHOOK_SECRET_TOKEN.encode("utf-8"),
         )
     else:
-        # 没有令牌时(本地调试)只接受本机直连，带转发头的一律视为外网请求
         authorized = (
             client_ip in ("127.0.0.1", "::1")
             and "X-Forwarded-For" not in request.headers
@@ -1562,7 +1516,6 @@ def receive_qq_msg():
                             headers = {"User-Agent": "Mozilla/5.0"}
                             resp = requests.get(img_url, headers=headers, timeout=5)
                             if resp.status_code == 200:
-                                # 老手机屏幕窄，群里的图只按 240 宽存一份缩略图
                                 save_image(
                                     img_id,
                                     to_jpeg_b64(io.BytesIO(resp.content), 240, 100000, 70),
@@ -1708,7 +1661,6 @@ def receive_qq_msg():
 
             print(f"💬 [QQ群收到]: {safe_sender} - {raw_msg}")
 
-            # 机器人自己发的消息(网页用户的发言)按 QQ 号识别，不能按昵称，否则改个昵称就能冒充
             bot_ids = {str(data.get("self_id", "")), os.environ.get("BOT_QQ", "")}
             if sender_qq in bot_ids:
                 final_pure_sender = ""
@@ -1734,7 +1686,6 @@ def receive_qq_msg():
             )
 
     elif data.get("post_type") == "notice" and data.get("group_id") == TARGET_GROUP_ID:
-
         event_time = data.get("time", int(time.time()))
 
         if event_time <= APP_START_TIME:
@@ -1973,7 +1924,6 @@ def download_qq_file():
     if not file_url:
         return "缺少文件下载链接", 400
 
-    # 只代下载服务器自己生成并签过名的地址，防止被当成任意网址的代理
     if not hmac.compare_digest(
         request.args.get("sig", "").encode("utf-8"), sign_url(file_url).encode("utf-8")
     ):

@@ -3,7 +3,6 @@ export TERM=xterm-256color
 
 REAL_PORT=${PORT:-7860}
 
-# Webhook 令牌每次启动随机生成，只在容器内部使用，无需手动配置
 export WEBHOOK_TOKEN=$(python -c 'import secrets; print(secrets.token_hex(24))')
 
 echo "🚀 正在将 Webhook 动态绑定到端口: $REAL_PORT"

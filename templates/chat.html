@@ -107,7 +107,6 @@
 
     <script type="text/javascript">
 /* <![CDATA[ */
-        /* 老浏览器没有 XMLHttpRequest 和 JSON，这里补上 */
         if (typeof XMLHttpRequest === "undefined") {
             window.XMLHttpRequest = function () {
                 try { return new ActiveXObject("Msxml2.XMLHTTP.6.0"); } catch (e) {}
@@ -152,7 +151,6 @@
         var pollTimer = null;
         var isPolling = false;
 
-        /* 发一个 JSON 请求；done(状态码, 解析后的结果或 null) */
         function postJSON(url, data, done) {
             var xhr = new XMLHttpRequest();
             xhr.open('POST', url + '?t=' + new Date().getTime(), true);
@@ -290,7 +288,6 @@
             }
         }
 
-        /* 把 /api/sync 的返回显示到页面上；有新消息时返回 true */
         function applySync(res) {
             var hasNewMessage = false;
             if (res.online_count !== undefined) {
