@@ -13,6 +13,8 @@ from flask import (
     Flask,
     request,
     jsonify,
+    flash,
+    get_flashed_messages,
     render_template,
     redirect,
     url_for,
@@ -107,15 +109,24 @@ def wml_response(raw_content):
 
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
-    error = success = None
+    return login_view(
+        url_for("login_page"),
+        url_for("index"),
+        lambda **notices: render_template("login.html", **notices),
+    )
+
+
+def login_view(self_url, home_url, render):
     if request.method == "POST":
         logged_in, error, success = process_login_form()
         if logged_in:
-            return redirect(url_for("index"))
-    elif get_active_account():
-        return redirect(url_for("index"))
-
-    return render_template("login.html", error=error, success=success)
+            return redirect(home_url)
+        flash(error or success, "error" if error else "success")
+        return redirect(self_url)
+    if get_active_account():
+        return redirect(home_url)
+    notices = dict(get_flashed_messages(with_categories=True))
+    return render(error=notices.get("error"), success=notices.get("success"))
 
 
 @app.route("/logout", methods=["GET"])
@@ -378,15 +389,11 @@ def is_mobile_device(req):
 def wml_login_page():
     if not is_mobile_device(request):
         return redirect(url_for("login_page"))
-    error = success = None
-    if request.method == "POST":
-        logged_in, error, success = process_login_form()
-        if logged_in:
-            return redirect("/wml/")
-    elif get_active_account():
-        return redirect("/wml/")
-
-    return wml_response(render_template("wml_login.xml", error=error, success=success))
+    return login_view(
+        "/wml/login",
+        "/wml/",
+        lambda **notices: wml_response(render_template("wml_login.xml", **notices)),
+    )
 
 
 @app.route("/wml/logout", methods=["GET"])
