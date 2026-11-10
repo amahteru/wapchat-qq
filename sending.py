@@ -36,14 +36,7 @@ MENTION_RE = r"\[@([^\]]+)\]|(?<![\w.-])@([\w一-龥·_-]+)"
 
 
 def highlight_mentions(safe_text):
-    safe_text = re.sub(
-        r"\[@([^\]]+)\]", r'<span class="action-reply">[@\1]</span>', safe_text
-    )
-    return re.sub(
-        r"(?<![\w.-])@([\w\u4e00-\u9fa5·_-]+)",
-        r'<span class="action-reply">@\1</span>',
-        safe_text,
-    )
+    return re.sub(MENTION_RE, lambda m: f'<span class="action-reply">{m.group(0)}</span>', safe_text)
 
 
 def send_web_message(account, raw_text, req):

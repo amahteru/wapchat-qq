@@ -5,7 +5,6 @@ import hmac
 import html
 import io
 import json
-import os
 import re
 import time
 import urllib.parse
@@ -40,10 +39,8 @@ from common import (
     filter_emoji,
     get_online_count,
     images_collection,
-    internal_file_cache,
     online_sessions,
     paginate,
-    recent_web_uploads,
     save_image,
     search_query,
     sign_url,
@@ -93,22 +90,6 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 
 app.secret_key = SECRET_KEY
-
-
-@app.route("/api/internal_download/<file_id>")
-def internal_download(file_id):
-    if request.remote_addr != "127.0.0.1":
-        return "Forbidden", 403
-
-    file_data = internal_file_cache.get(file_id)
-    if not file_data:
-        return "File not found or expired", 404
-
-    return send_file(
-        io.BytesIO(file_data["bytes"]),
-        download_name=file_data["name"],
-        as_attachment=True,
-    )
 
 
 @app.context_processor
@@ -288,15 +269,12 @@ def upload_file():
 
     try:
         filename = file.filename
-        username = nickname(account)
-        location = get_ip_location(get_real_ip(request))
-
-        recent_web_uploads[filename] = username
-
         file_bytes = file.read()
         if not file_bytes:
             return upload_result("error", "不能发送空文件。")
 
+        username = nickname(account)
+        location = get_ip_location(get_real_ip(request))
         file_id = str(uuid.uuid4())
 
         try:
@@ -310,36 +288,23 @@ def upload_file():
                     "time": time.time(),
                 }
             )
-
             cleanup_old_files()
         except Exception as e:
             print(f"存入网盘失败: {e}")
 
-        qq_notification_text = f"[网页-{location}]{username}: [文件: {filename}]"
+        send_group([text_seg(f"[{location} - {username}] [文件: {filename}]")], timeout=3)
 
-        try:
-            send_group([text_seg(qq_notification_text)], timeout=3)
-        except Exception as e:
-            print(f"发送文件前置文字提示失败: {e}")
+        resp_data = onebot(
+            "upload_group_file",
+            {"group_id": TARGET_GROUP_ID, "file": "base64://" + base64.b64encode(file_bytes).decode(), "name": filename},
+            timeout=60,
+        )
+        if resp_data.get("status") != "ok":
+            raise RuntimeError(resp_data.get("wording") or resp_data.get("message") or "机器人返回失败")
 
-        local_port = os.environ["PORT"]
-        download_url = f"http://127.0.0.1:{local_port}/api/internal_download/{file_id}"
-
-        internal_file_cache[file_id] = {"bytes": file_bytes, "name": filename}
-        try:
-            resp_data = onebot("upload_group_file", {"group_id": TARGET_GROUP_ID, "file": download_url, "name": filename}, timeout=60)
-        finally:
-            internal_file_cache.pop(file_id, None)
-
-        if resp_data.get("status") == "failed":
-            raise Exception(
-                f"机器人报错: {resp_data.get('wording', resp_data.get('msg', '未知拦截'))}"
-            )
-
-        safe_filename = html.escape(filename or "")
         add_chat_message(
             "网页",
-            f"[网页-{html.escape(location)}]{html.escape(username)}: <span style='color:#008800;'>[文件: {safe_filename}]</span> <a href='/api/download_file?id={file_id}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>",
+            f"[网页-{html.escape(location)}]{html.escape(username)}: <span style='color:#008800;'>[文件: {html.escape(filename)}]</span> <a href='/api/download_file?id={file_id}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>",
             username,
             f"[文件: {filename}]",
         )

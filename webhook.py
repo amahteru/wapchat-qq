@@ -21,7 +21,6 @@ from common import (
     filter_emoji,
     images_collection,
     processed_notices_cache,
-    recent_web_uploads,
     save_image,
     sign_url,
     to_jpeg_b64,
@@ -41,6 +40,14 @@ RECALLED_TEXT = "[消息已撤回]"
 RECALLED_HTML = f'<span style="color:#999; font-size:12px;"><i>{RECALLED_TEXT}</i></span>'
 
 
+def format_duration(seconds):
+    days, rest = divmod(seconds, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes = -(-rest // 60)
+    parts = [f"{days}天" if days else "", f"{hours}小时" if hours else "", f"{minutes}分钟" if minutes else ""]
+    return "".join(parts) or "0分钟"
+
+
 def receive_qq_msg():
     client_ip = request.remote_addr or ""
 
@@ -50,7 +57,7 @@ def receive_qq_msg():
     )
 
     if not authorized:
-        print(f"[安全拦截] 拦截未授权的 Webhook 请求！来源IP: {client_ip}")
+        print(f"[安全拦截] 拦截未授权的 Webhook 请求，来源IP: {client_ip}")
         return jsonify({"status": "failed", "msg": "Unauthorized"}), 403
 
     data = request.get_json(silent=True) or {}
@@ -256,14 +263,14 @@ def receive_qq_msg():
 
         elif notice_type == "group_increase":
             user_name = get_qq_name(user_qq)
-            sys_msg_text = f"欢迎 {user_name} 加入了群聊！"
+            sys_msg_text = f"{user_name} 加入了群聊"
         elif notice_type == "group_decrease":
             user_name = get_qq_name(user_qq)
             if sub_type == "leave":
-                sys_msg_text = f"{user_name} 默默离开了群聊"
+                sys_msg_text = f"{user_name} 退出了群聊"
             elif sub_type in ["kick", "kick_me"]:
                 operator_name = get_qq_name(operator_qq)
-                sys_msg_text = f"{user_name} 被 {operator_name} 请出了群聊"
+                sys_msg_text = f"{user_name} 被 {operator_name} 移出了群聊"
 
         elif notice_type == "group_recall":
             recalled_qq_msg_id = data["message_id"]
@@ -288,67 +295,48 @@ def receive_qq_msg():
                 except Exception as e:
                     print(f"云端更新撤回状态失败: {e}")
 
-        elif notice_type == "group_upload":
+        elif notice_type == "group_upload" and user_qq != str(data["self_id"]):
             user_name = get_qq_name(user_qq)
             file_info = data.get("file", {})
             file_name = file_info.get("name", "未知文件")
+            file_url = file_info.get("url", "")
 
-            if (
-                str(user_qq) == str(data.get("self_id"))
-                and file_name in recent_web_uploads
-            ):
-                display_name = recent_web_uploads[file_name]
-                del recent_web_uploads[file_name]
+            if not file_url and file_info.get("id"):
+                try:
+                    resp = onebot("get_group_file_url", {"group_id": TARGET_GROUP_ID, "file_id": file_info["id"], "busid": file_info.get("busid", "")}, timeout=2)
+                    if resp.get("status") == "ok":
+                        file_url = resp.get("data", {}).get("url", "")
+                except Exception as e:
+                    print(f"获取群文件下载链接失败: {e}")
+
+            safe_filename = html.escape(file_name)
+            if file_url:
+                encoded_url = urllib.parse.quote(file_url, safe="")
+                encoded_name = urllib.parse.quote(file_name)
+                proxy_url = f"/api/download_qq_file?name={encoded_name}&url={encoded_url}&sig={sign_url(file_url)}"
+                file_html = f"<span style='color:#008800;'>[文件: {safe_filename}]</span> <a href='{proxy_url}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>"
             else:
-                display_name = user_name
+                file_html = f"<span style='color:#008800;'>[文件: {safe_filename}]</span> <span style='color:#999; font-size:11px;'>(无法获取下载链接)</span>"
 
-            sys_msg_text = f"{display_name} 上传了群文件: {file_name}"
-
-            if str(user_qq) != str(data.get("self_id")):
-                file_url = file_info.get("url", "")
-                file_id = file_info.get("id", "")
-                file_busid = file_info.get("busid", "")
-
-                if not file_url and file_id:
-                    try:
-                        resp = onebot("get_group_file_url", {"group_id": TARGET_GROUP_ID, "file_id": file_id, "busid": file_busid}, timeout=2)
-                        if resp.get("status") == "ok":
-                            file_url = resp.get("data", {}).get("url", "")
-                    except Exception:
-                        pass
-
-                safe_sender = html.escape(display_name)
-                safe_filename = html.escape(file_name)
-
-                if file_url:
-                    encoded_url = urllib.parse.quote(file_url, safe="")
-                    encoded_name = urllib.parse.quote(file_name)
-                    proxy_url = f"/api/download_qq_file?name={encoded_name}&url={encoded_url}&sig={sign_url(file_url)}"
-                    file_html = f"<span style='color:#008800;'>[文件: {safe_filename}]</span> <a href='{proxy_url}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>"
-                else:
-                    file_html = f"<span style='color:#008800;'>[文件: {safe_filename}]</span> <span style='color:#999; font-size:11px;'>(无法获取下载链接)</span>"
-
-                add_chat_message(
-                    "QQ群",
-                    f"{safe_sender}: {file_html}",
-                    display_name,
-                    f"[文件: {file_name}]",
-                    qq_msg_id=None,
-                )
+            add_chat_message(
+                "QQ群",
+                f"{html.escape(user_name)}: {file_html}",
+                user_name,
+                f"[文件: {file_name}]",
+            )
 
         elif notice_type == "group_ban":
             user_name = get_qq_name(user_qq)
             if sub_type == "ban":
-                duration = data.get("duration", 0) // 60
-                sys_msg_text = f"{user_name} 被管理员禁言了 {duration} 分钟"
+                sys_msg_text = f"{user_name} 被禁言{format_duration(data.get('duration', 0))}"
             elif sub_type == "lift_ban":
-                sys_msg_text = f"{user_name} 被解除了禁言"
+                sys_msg_text = f"{user_name} 被解除禁言"
         elif notice_type == "group_admin":
             user_name = get_qq_name(user_qq)
             if sub_type == "set":
-                sys_msg_text = f"{user_name} 荣升为群管理员"
+                sys_msg_text = f"{user_name} 成为群管理员"
             elif sub_type == "unset":
-                sys_msg_text = f"{user_name} 被取消了管理员"
+                sys_msg_text = f"{user_name} 被取消群管理员"
 
         if sys_msg_text:
             print(f"[系统事件]: {sys_msg_text}")

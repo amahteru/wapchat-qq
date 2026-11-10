@@ -65,14 +65,19 @@
 
 登录会话密钥和内部 Webhook 令牌都会自动生成，不需要填写。网站默认监听 `7860` 端口，平台通过 `PORT` 环境变量指定其他端口时会自动使用。
 
-机器人的登录状态保存在容器的 `/root/.config/QQ` 目录。把它挂成持久化存储 (volume/磁盘)，重启和重新部署后就不用再扫码。以自己的服务器为例：
+机器人的登录状态保存在容器的 `/root/.config/QQ` 目录。要让重启和重新部署后不用再扫码，需要同时满足两点：
+
+1. 把 `/root/.config/QQ` 挂成持久化存储 (volume/磁盘)。
+2. 固定容器的主机名和 MAC 地址。QQ 会把登录状态和设备绑定，Docker 每次新建容器都会随机生成这两个值，不固定的话 QQ 会当成新设备，要求重新扫码。
+
+以自己的服务器为例：
 
 ```bash
 docker build -t wapchat-qq .
-docker run -d --name wapchat-qq --restart=always -p 7860:7860 -e MONGO_URI="mongodb+srv://..." -e TARGET_GROUP_ID=123456789 -e BOT_QQ=123456789 -v wapchat-qq-login:/root/.config/QQ wapchat-qq
+docker run -d --name wapchat-qq --restart=always --hostname wapchat-qq --mac-address 02:42:ac:11:00:42 -p 7860:7860 -e MONGO_URI="mongodb+srv://..." -e TARGET_GROUP_ID=123456789 -e BOT_QQ=123456789 -v wapchat-qq-login:/root/.config/QQ wapchat-qq
 ```
 
-实测容器启动后约占 300MB 内存 (QQ 登录前)，登录后会更多，建议给容器至少 1GB 内存。会自动休眠的免费托管套餐不适合：休眠期间机器人离线，醒来后可能需要重新扫码。
+实测容器启动后约占 300MB 内存 (QQ 登录前)，登录后会更多，建议给容器至少 1GB 内存。会自动休眠的免费托管套餐不适合：休眠期间机器人离线。不能自定义主机名和 MAC 地址的托管平台，每次重新部署后都需要重新扫码。
 
 ### 3. 扫码登录机器人
 

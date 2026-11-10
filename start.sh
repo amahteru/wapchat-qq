@@ -6,6 +6,13 @@ for name in MONGO_URI TARGET_GROUP_ID BOT_QQ; do
     fi
 done
 
+mkdir -p /root/.config/QQ
+if [ -f /root/.config/QQ/machine-id ]; then
+    cp /root/.config/QQ/machine-id /etc/machine-id
+else
+    cp /etc/machine-id /root/.config/QQ/machine-id
+fi
+
 export PORT=${PORT:-7860}
 export WEBHOOK_TOKEN=$(python -c 'import secrets; print(secrets.token_hex(24))')
 

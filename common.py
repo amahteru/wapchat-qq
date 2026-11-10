@@ -6,7 +6,6 @@ import json
 import os
 import re
 import secrets
-import sys
 import threading
 import time
 from collections import OrderedDict
@@ -16,9 +15,6 @@ import emoji
 from flask import request
 from PIL import Image
 from pymongo import MongoClient, ReturnDocument
-
-
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 class LimitedDict(OrderedDict):
@@ -123,7 +119,6 @@ def filter_emoji(text):
     text = re.sub(r":([^:]+):", r"[\1]", text)
 
     text = re.sub(r"[\U00010000-\U0010ffff\u2600-\u27BF]", "", text)
-    text = re.sub(r"[\ud800-\udfff]", "", text)
 
     return text
 
@@ -192,7 +187,7 @@ def cleanup_old_images(max_limit=500):
             if old_ids:
                 images_collection.delete_many({"_id": {"$in": old_ids}})
                 print(
-                    f"[自动清理] 图床超过 {max_limit} 张，已自动清理 {len(old_ids)} 张远古老图！"
+                    f"[自动清理] 图片超过{max_limit}张，已清理最旧的{len(old_ids)}张。"
                 )
     except Exception as e:
         print(f"图床自动清理失败: {e}")
@@ -226,12 +221,6 @@ processed_notices_cache = LimitedDict(1000, 3600)
 
 
 APP_START_TIME = int(time.time())
-
-
-internal_file_cache = LimitedDict(100, 300)
-
-
-recent_web_uploads = LimitedDict(100, 300)
 
 
 online_sessions = {}

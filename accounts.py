@@ -197,9 +197,8 @@ ADMIN_HELP = (
     "[指令] 仅群主/管理员可用:\n"
     "待审核 | 通过 账号 | 拒绝 账号\n"
     "封禁 账号 | 解封 账号 | 删号 账号\n"
-    "重置密码 账号 (新密码私聊发给你)\n"
-    "用户列表 [页码] | 状态 | 删文件 文件名\n"
-    "撤回机器人转发的网页消息，网页上也会同步撤回。"
+    "重置密码 账号 | 用户列表 | 状态\n"
+    "删文件 文件名"
 )
 
 
@@ -231,7 +230,7 @@ def list_pending():
     pending = [(acc, u) for acc, u in users_db.items() if u.get("status") == "pending"]
     if not pending:
         return "[审核] 目前没有待审核的账号。"
-    lines = [f"[审核] 待审核 {len(pending)} 个:"]
+    lines = [f"[审核] 待审核{len(pending)}个:"]
     for acc, u in pending[:10]:
         lines.append(f"{acc} ({u.get('location') or '未知地域'}): {u.get('reason') or '无'}")
     if len(pending) > 10:
@@ -249,11 +248,11 @@ def list_users(arg):
         key=lambda item: item[0].lower(),
     )
     if not users:
-        return "[用户] 还没有正式用户。"
+        return "[账号] 还没有正式用户。"
     total_pages = (len(users) + USERS_PER_PAGE - 1) // USERS_PER_PAGE
     page = min(page, total_pages)
     start = (page - 1) * USERS_PER_PAGE
-    lines = [f"[用户] 共 {len(users)} 个，第 {page}/{total_pages} 页:"]
+    lines = [f"[账号] 共{len(users)}个，第{page}/{total_pages}页:"]
     for acc, u in users[start : start + USERS_PER_PAGE]:
         mark = " (已封禁)" if u.get("status") == "banned" else ""
         name = u.get("nickname") or acc
@@ -276,18 +275,18 @@ def status_report():
     uptime = int(time.time()) - APP_START_TIME
     lines = [
         "[状态]",
-        f"用户: 正式 {counts['active']} / 待审核 {counts['pending']} / 封禁 {counts['banned']}",
-        f"在线: {get_online_count()} 人，已运行 {uptime // 3600} 小时 {uptime % 3600 // 60} 分",
+        f"账号: 正式{counts['active']}，待审核{counts['pending']}，封禁{counts['banned']}",
+        f"在线: {get_online_count()}人，已运行{uptime // 3600}小时{uptime % 3600 // 60}分",
     ]
     try:
         files_size = sum(d["size"] for d in files_collection.find({}, {"size": 1}))
         lines.append(
-            f"聊天记录 {chat_collection.estimated_document_count()} 条，"
-            f"图片 {images_collection.estimated_document_count()} 张，"
-            f"网盘 {files_collection.estimated_document_count()} 个文件 ({format_size(files_size)})"
+            f"聊天记录{chat_collection.estimated_document_count()}条，"
+            f"图片{images_collection.estimated_document_count()}张，"
+            f"网盘{files_collection.estimated_document_count()}个文件，共{format_size(files_size)}"
         )
         stats = files_collection.database.command("dbStats")
-        lines.append(f"数据库占用: {format_size(stats.get('storageSize', 0) + stats.get('indexSize', 0))} / 512MB")
+        lines.append(f"数据库占用: {format_size(stats.get('storageSize', 0) + stats.get('indexSize', 0))} /512MB")
     except Exception as e:
         print(f"统计数据库用量失败: {e}")
     return "\n".join(lines)
@@ -314,7 +313,7 @@ def set_status(account, status):
 def handle_account_command(command, account, sender_qq):
     user = users_db.get(account)
     if not user:
-        return f"[审核] 找不到账号 {account}。"
+        return f"[账号] 找不到账号 {account}。"
     status = user.get("status")
 
     if command == "通过":
@@ -330,32 +329,32 @@ def handle_account_command(command, account, sender_qq):
         users_collection.delete_one({"_id": account})
         users_db.pop(account, None)
         online_sessions.pop(account, None)
-        return f"[审核] 账号 {account} 已删除，名额已释放。"
+        return f"[账号] {account} 已删除，名额已释放。"
 
     if command == "封禁":
         if status == "banned":
-            return f"[审核] 账号 {account} 已经是封禁状态。"
+            return f"[账号] {account} 已经是封禁状态。"
         set_status(account, "banned")
         online_sessions.pop(account, None)
-        return f"[审核] 账号 {account} 已封禁，账号名和注册 IP 都不会释放。"
+        return f"[账号] {account} 已封禁，账号名和注册IP都不会释放。"
 
     if command == "解封":
         if status != "banned":
-            return f"[审核] 账号 {account} 没有被封禁。"
+            return f"[账号] {account} 没有被封禁。"
         set_status(account, "active")
-        return f"[审核] 账号 {account} 已解封。"
+        return f"[账号] {account} 已解封。"
 
     if command == "重置密码":
         if status == "pending":
-            return f"[审核] 账号 {account} 还在待审核，不需要重置密码。"
+            return f"[账号] {account} 还在待审核，不需要重置密码。"
         new_password = secrets.token_urlsafe(6)
         if not send_private(sender_qq, f"[WapChat] 账号 {account} 的新密码: {new_password}"):
-            return "[审核] 私聊发送失败，密码没有改动。请先加机器人为好友再试。"
+            return "[账号] 私聊发送失败，密码没有改动。请先加机器人为好友再试。"
         password_hash = hash_password(new_password)
         users_collection.update_one({"_id": account}, {"$set": {"password": password_hash}})
         user["password"] = password_hash
         login_failures.pop(account, None)
-        return f"[审核] 账号 {account} 的密码已重置，新密码已私聊发给你。"
+        return f"[账号] {account} 的密码已重置，新密码已私聊发给你。"
 
     return None
 
@@ -400,14 +399,14 @@ def handle_admin_command(data):
         elif command == "删文件":
             result = files_collection.delete_many({"filename": arg})
             if result.deleted_count:
-                reply = f"[网盘] 已删除 {result.deleted_count} 个名为 {arg} 的文件。"
+                reply = f"[网盘] 已删除{result.deleted_count}个名为 {arg} 的文件。"
             else:
                 reply = f"[网盘] 找不到名为 {arg} 的文件。"
         else:
             reply = handle_account_command(command, arg, sender_qq)
     except Exception as e:
         print(f"执行群指令「{command}」失败: {e}")
-        reply = "[审核] 操作失败，数据库暂时不可用。"
+        reply = "[指令] 操作失败，数据库暂时不可用。"
 
     if reply:
         bot_say(reply)
