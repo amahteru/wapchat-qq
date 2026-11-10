@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}选择颜文字{% endblock %}
+{% block css %}
+        .kmj-btn { display: inline-block; padding: 3px 5px; margin: 3px; border: 1px solid #999; background: #eee; text-decoration: none; color: #000; font-size: 12px; line-height: 1.2; }
+        .kmj-btn:active { background: #ccc; }
+{{ ui.pager_css() }}
+{% endblock %}
+{% block dark_css %}
+        .kmj-btn { border: 1px solid #555; background: #333; color: #ddd; }
+        .kmj-btn:active { background: #555; }
+{{ ui.pager_dark_css() }}
+{% endblock %}
+{% block body %}
+{{ ui.header("颜文字 (" ~ page ~ "/" ~ total_pages ~ ")", "取消返回") }}
+
+    <div class="panel" style="text-align: center;">
+        {% for kmj in emojis %}
+            <a href="javascript:selectEmoji('{{ kmj.encoded }}');" class="kmj-btn">{{ kmj.raw }}</a>
+        {% endfor %}
+    </div>
+
+{{ ui.pager("/emojis", page, total_pages) }}
+
+    <script type="text/javascript">
+/* <![CDATA[ */
+{{ ui.get_cookie_js() }}
+        function selectEmoji(encodedEmoji) {
+            var draft = getCookie("nokia_draft") + decodeURIComponent(encodedEmoji);
+            document.cookie = "nokia_draft=" + encodeURIComponent(draft) + "; path=/";
+            window.location.href = "/";
+        }
+    /* ]]> */
+    </script>
+{% endblock %}

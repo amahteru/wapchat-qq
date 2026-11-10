@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}在线人员{% endblock %}
+{% block css %}
+{{ ui.item_css() }}
+{% endblock %}
+{% block dark_css %}
+{{ ui.item_dark_css() }}
+{% endblock %}
+{% block body %}
+{{ ui.header("在线名单 (" ~ users|length ~ "人)") }}
+
+    <div class="panel">
+        {% if not users %}
+            <div class="item">当前没有其他用户在线...</div>
+        {% else %}
+            {% for u in users %}
+            <div class="item">
+                <span style="color:green;">●</span>
+                <span class="item-title">{{ u.nickname }}</span>
+                <span class="item-meta">({{ u.account }})</span>
+                {% if u.is_me %} <span style="font-size:11px; color:blue;">[我自己]</span> {% endif %}
+            </div>
+            {% endfor %}
+        {% endif %}
+    </div>
+{% endblock %}

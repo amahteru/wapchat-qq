@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE wml PUBLIC "-//WAPFORUM//DTD WML 1.1//EN" "http://www.wapforum.org/DTD/wml_1.1.xml">
+<wml>
+    <head>
+        <meta http-equiv="Cache-Control" content="max-age=0"/>
+    </head>
+    
+    <card id="chat" title="WapChat QQ">
+        <onevent type="onenterforward">
+            <refresh>
+                <setvar name="message" value=""/>
+            </refresh>
+        </onevent>
+        <p>
+            <b>WapChatQQ({{ online_count }}在线)</b> <a href="#options">[选项]</a><br/>
+            --------<br/>
+            {% if notice %}{{ notice }}<br/>{% endif %}
+            发言:<input name="message" type="text" emptyok="true" format="*M"/><br/>
+            <anchor>[发送]
+                <go href="./" method="post">
+                    <postfield name="message" value="$(message)"/>
+                </go>
+            </anchor>
+            <anchor>[刷新]
+                <go href="./" method="post">
+                    <postfield name="r" value="1"/>
+                </go>
+            </anchor><br/>
+            --------<br/>
+            {% if not history %}暂无消息<br/>{% endif %}
+            {% for msg in history %}
+                <b>{{ msg.get('sender_title', 'QQ群') }}</b><br/>
+                {{ msg.wml_text | safe }}<br/>
+            {% endfor %}
+        </p>
+    </card>
+
+    <card id="options" title="选项菜单">
+        <p>
+            <a href="#rename">改名</a><br/>
+            <a href="logout">注销</a><br/>
+            <a href="#chat">返回聊天</a>
+        </p>
+    </card>
+
+    <card id="rename" title="修改昵称">
+        <p>
+            当前昵称: {{ saved_username }}<br/>
+            新昵称:<input name="new_name" type="text" emptyok="false"/><br/>
+            <anchor>[确认保存]
+                <go href="rename_wml" method="post">
+                    <postfield name="new_name" value="$(new_name)"/>
+                </go>
+            </anchor><br/>
+            <a href="#options">返回选项</a>
+        </p>
+    </card>
+</wml>

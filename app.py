@@ -55,7 +55,7 @@ from flask import (
     Flask,
     request,
     jsonify,
-    render_template_string,
+    render_template,
     redirect,
     url_for,
     make_response,
@@ -97,6 +97,9 @@ from pymongo import MongoClient, ReturnDocument
 from werkzeug.security import check_password_hash, generate_password_hash
 
 MONGO_URI = os.environ.get("MONGO_URI", "")
+WEBHOOK_SECRET_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
+ONEBOT_URL = "http://127.0.0.1:3000"
+ACCOUNT_RE = re.compile(r"^[A-Za-z0-9_]{3,15}$")
 
 # MongoClient 是惰性连接，这里不会报错；真正连不上时由各处读写自行处理
 client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
@@ -165,58 +168,35 @@ def filter_emoji(text):
     return text
 
 
-QQ_FACES = {}
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def read_data_lines(filename):
+    """读取随代码一起发布的数据文件，返回去掉空行后的各行。"""
+    with open(os.path.join(BASE_DIR, filename), encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip()]
 
 
 def load_qq_faces():
-    global QQ_FACES
-    try:
-        face_json_path = os.path.join(os.path.dirname(__file__), "face_config.json")
-        with open(face_json_path, "r", encoding="utf-8") as f:
-            face_data = json.load(f)
-
-            for face in face_data.get("sysface", []):
-                face_id = face.get("QSid")
-                face_name = face.get("QDes", "")
-
-                if face_id is not None and face_name:
-                    clean_name = face_name.lstrip("/")
-                    QQ_FACES[int(face_id)] = clean_name
-
-        print(f"✅ 成功从 face_config.json 加载了 {len(QQ_FACES)} 个 QQ 原生表情！")
-    except Exception as e:
-        print(f"❌ 加载 face_config.json 失败，将使用兜底字典: {e}")
-        QQ_FACES.update({14: "微笑", 13: "呲牙", 76: "强", 285: "汗"})
+    """QQ 原生小黄脸：编号 -> 名称(如 14 -> 微笑)。"""
+    with open(os.path.join(BASE_DIR, "face_config.json"), encoding="utf-8") as f:
+        faces = json.load(f).get("sysface", [])
+    return {
+        int(face["QSid"]): face["QDes"].lstrip("/")
+        for face in faces
+        if face.get("QSid") and face.get("QDes")
+    }
 
 
-load_qq_faces()
-
-KAOMOJI_LIST = []
-
-
-def load_kaomojis():
-    global KAOMOJI_LIST
-    try:
-        kmj_path = os.path.join(os.path.dirname(__file__), "all_output_result_kmj.txt")
-        if os.path.exists(kmj_path):
-            with open(kmj_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    parts = line.strip().split("\t")
-                    if parts and len(parts) >= 1:
-                        kmj = parts[0]
-                        if kmj and kmj not in KAOMOJI_LIST:
-                            KAOMOJI_LIST.append(kmj)
-            print(f"✅ 成功加载了 {len(KAOMOJI_LIST)} 个颜文字！")
-        else:
-            print("❌ 未找到 all_output_result_kmj.txt 文件，使用兜底颜文字。")
-    except Exception as e:
-        print(f"❌ 加载颜文字文件失败: {e}")
-
-    if not KAOMOJI_LIST:
-        KAOMOJI_LIST = ["(￣▽￣)", "(⊙_⊙)", "(T_T)", "╮(╯▽╰)╭", "(#`O′)"]
-
-
-load_kaomojis()
+QQ_FACES = load_qq_faces()
+# 颜文字库每行是"颜文字<TAB>其他列"，只取第一列并去重
+KAOMOJI_LIST = list(
+    dict.fromkeys(
+        line.split("\t")[0] for line in read_data_lines("all_output_result_kmj.txt")
+    )
+)
+BANNED_WORDS = read_data_lines("sensitive_words.txt")
+print(f"✅ 已加载 {len(QQ_FACES)} 个 QQ 表情、{len(KAOMOJI_LIST)} 个颜文字、{len(BANNED_WORDS)} 个敏感词")
 
 
 def load_chat_history():
@@ -269,6 +249,26 @@ def cleanup_old_images(max_limit=500):
         print(f"图床自动清理失败: {e}")
 
 
+def to_jpeg_b64(source, max_width, max_height, quality):
+    """把图片等比缩小到指定尺寸以内并转成 JPEG，返回 base64 文本。"""
+    img = Image.open(source)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+
+    img_io = io.BytesIO()
+    img.save(img_io, "JPEG", quality=quality)
+    return base64.b64encode(img_io.getvalue()).decode("utf-8")
+
+
+def save_image(img_id, b64_data):
+    """把图片存进图床；同一张图重复保存只刷新时间。超出上限时清理最旧的。"""
+    images_collection.replace_one(
+        {"_id": img_id}, {"data": b64_data, "time": time.time()}, upsert=True
+    )
+    cleanup_old_images()
+
+
 chat_history, current_msg_id = load_chat_history()
 
 TARGET_GROUP_ID = int(os.environ.get("TARGET_GROUP_ID", "0"))
@@ -281,20 +281,11 @@ def get_qq_name(group_id, qq):
     if qq_str in qq_name_cache:
         return qq_name_cache[qq_str]
     try:
-        resp = requests.post(
-            "http://127.0.0.1:3000/get_group_member_info",
-            json={"group_id": group_id, "user_id": int(qq)},
-            timeout=1.5,
-        ).json()
+        resp = onebot("get_group_member_info", {"group_id": group_id, "user_id": int(qq)}, timeout=1.5)
 
         if resp and resp.get("status") in ["ok", "success"]:
             data = resp.get("data", {})
-            name = data.get("card") or data.get("nickname") or qq_str
-
-            name = filter_emoji(name)
-            name = re.sub(r"\[.*?\]", "", name).strip()
-            if not name:
-                name = qq_str
+            name = clean_qq_name(data.get("card") or data.get("nickname")) or qq_str
 
             qq_name_cache[qq_str] = name
             return name
@@ -317,28 +308,15 @@ def get_qq_by_name(target_name):
         return name_to_qq_cache[target_name]
 
     try:
-        resp = requests.post(
-            "http://127.0.0.1:3000/get_group_member_list",
-            json={"group_id": TARGET_GROUP_ID},
-            timeout=2,
-        ).json()
+        resp = onebot("get_group_member_list", {"group_id": TARGET_GROUP_ID}, timeout=2)
 
         if resp and resp.get("status") in ["ok", "success"]:
             members = resp.get("data", [])
             found_uid = None
             for member in members:
                 uid = str(member.get("user_id", ""))
-                card = member.get("card", "")
-                nickname = member.get("nickname", "")
-
-                clean_card = (
-                    re.sub(r"\[.*?\]", "", filter_emoji(card)).strip() if card else ""
-                )
-                clean_nick = (
-                    re.sub(r"\[.*?\]", "", filter_emoji(nickname)).strip()
-                    if nickname
-                    else ""
-                )
+                clean_card = clean_qq_name(member.get("card"))
+                clean_nick = clean_qq_name(member.get("nickname"))
 
                 if clean_card:
                     name_to_qq_cache[clean_card] = uid
@@ -408,17 +386,6 @@ def get_online_count():
     return len(online_sessions)
 
 
-def load_banned_words():
-    try:
-        with open("sensitive_words.txt", "r", encoding="utf-8") as f:
-            return [line.strip() for line in f if line.strip()]
-    except Exception as e:
-        print(f"Failed to load sensitive_words.txt: {e}")
-        return []
-
-
-BANNED_WORDS = load_banned_words()
-
 MAX_TOTAL_ACCOUNTS = 500
 MAX_ACCOUNTS_PER_IP = 1
 MAX_PENDING_ACCOUNTS = 20
@@ -431,6 +398,81 @@ MAX_LOGIN_FAILURES = 5
 login_failures = LimitedDict(1000, 300)
 
 chat_lock = threading.Lock()
+
+
+@app.context_processor
+def inject_theme():
+    """所有页面模板都能直接用 theme，不必每个视图各传一遍。"""
+    return {"theme": request.cookies.get("nokia_theme", "light")}
+
+
+def onebot(action, payload, timeout=3):
+    """调用本机 NapCat 的 OneBot 接口，返回解析后的 JSON。"""
+    return requests.post(f"{ONEBOT_URL}/{action}", json=payload, timeout=timeout).json()
+
+
+def clean_qq_name(name):
+    """QQ 昵称/群名片转成老手机能显示的纯文字：emoji 和方括号内容都去掉。"""
+    return re.sub(r"\[.*?\]", "", filter_emoji(name or "")).strip()
+
+
+def paginate(total, per_page):
+    """按请求里的 page 参数算出 (当前页, 总页数, 要跳过的条数)。"""
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(max(request.args.get("page", 1, type=int), 1), total_pages)
+    return page, total_pages, (page - 1) * per_page
+
+
+def search_query(q, *fields):
+    """生成"任一字段包含 q"的 MongoDB 查询条件；q 按普通文字处理，不当正则。"""
+    if not q:
+        return {}
+    pattern = {"$regex": re.escape(q), "$options": "i"}
+    return {"$or": [{field: pattern} for field in fields]}
+
+
+def upload_result(status, msg=""):
+    """上传接口的返回页：在隐藏 iframe 里回调父页面的 uploadCallback。"""
+    safe_msg = json.dumps(str(msg)).replace("<", "&lt;")
+    return f'<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("{status}", {safe_msg});/* ]]> */</script>'
+
+
+def wml_response(raw_content, target_card=None):
+    """老手机直接返回 WML；电脑和现代手机看不了 WML，转成 XHTML 再返回。"""
+    if is_mobile_device(request):
+        resp = make_response(raw_content)
+        resp.headers["Content-Type"] = "text/vnd.wap.wml; charset=utf-8"
+    else:
+        resp = make_response(adapt_wml_to_xhtmlmp(raw_content, target_card))
+        resp.headers["Content-Type"] = "text/html; charset=utf-8"
+    return resp
+
+
+def process_login_form():
+    """处理登录/注册表单(网页版和 WML 版共用)。返回 (是否已登录, 错误提示, 成功提示)。"""
+    account = request.form.get("account", "").strip()
+    password = request.form.get("password", "").strip()
+
+    if not account or not password:
+        return False, "账号和密码不能为空！", None
+
+    if not ACCOUNT_RE.match(account):
+        return False, "账号只能包含3-15位字母、数字或下划线！", None
+
+    if "register_btn" in request.form:
+        ok, msg = register_account(
+            account, password, request.form.get("reason", ""), request
+        )
+        return (False, None, msg) if ok else (False, msg, None)
+
+    error = try_login(account, password)
+    return error is None, error, None
+
+
+def has_banned_word(text):
+    """文字里是否含敏感词。先去掉标点和空格再比，防止用符号隔开来绕过。"""
+    clean = re.sub(r"[^\w\u4e00-\u9fa5]", "", text).lower()
+    return any(word.lower() in clean for word in BANNED_WORDS)
 
 
 def get_active_account():
@@ -469,7 +511,7 @@ def highlight_mentions(safe_text):
         r"\[@([^\]]+)\]", r'<span class="action-reply">[@\1]</span>', safe_text
     )
     return re.sub(
-        r"(?<![\w.-])@([\w一-龥·_-]+)",
+        r"(?<![\w.-])@([\w\u4e00-\u9fa5·_-]+)",
         r'<span class="action-reply">@\1</span>',
         safe_text,
     )
@@ -488,8 +530,7 @@ def clean_nickname(raw):
     name = re.sub(r"[\[\]\s]+", " ", name).strip()[:12].strip()
     if not name:
         return None, "昵称不能为空或全为非法字符！"
-    clean = re.sub(r"[^\w一-龥]", "", name).lower()
-    if any(w.lower() in clean for w in BANNED_WORDS):
+    if has_banned_word(name):
         return None, "昵称包含违规词汇！"
     return name, None
 
@@ -564,14 +605,7 @@ def bot_say(text):
     """让机器人在目标群里发一条文字，并登记回声以免被当成群消息再转回网页。"""
     remember_echo(text)
     try:
-        requests.post(
-            "http://127.0.0.1:3000/send_group_msg",
-            json={
-                "group_id": TARGET_GROUP_ID,
-                "message": [{"type": "text", "data": {"text": text}}],
-            },
-            timeout=5,
-        )
+        onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": [{"type": "text", "data": {"text": text}}]}, timeout=5)
         return True
     except Exception as e:
         print(f"机器人发送群消息失败: {e}")
@@ -588,8 +622,7 @@ def register_account(account, password, reason, req):
     if len(reason) > MAX_REASON_LENGTH:
         return False, f"申请理由不能超过{MAX_REASON_LENGTH}字！"
 
-    clean_reason = re.sub(r"[^\w一-龥]", "", reason).lower()
-    if any(w.lower() in clean_reason for w in BANNED_WORDS):
+    if has_banned_word(reason):
         return False, "申请理由包含违规词汇！"
 
     if len(users_db) >= MAX_TOTAL_ACCOUNTS:
@@ -648,15 +681,7 @@ def is_group_manager(data):
     role = sender.get("role")
     if not role:
         try:
-            resp = requests.post(
-                "http://127.0.0.1:3000/get_group_member_info",
-                json={
-                    "group_id": TARGET_GROUP_ID,
-                    "user_id": int(sender.get("user_id", 0)),
-                    "no_cache": True,
-                },
-                timeout=2,
-            ).json()
+            resp = onebot("get_group_member_info", {"group_id": TARGET_GROUP_ID, "user_id": int(sender.get("user_id", 0)), "no_cache": True}, timeout=2)
             role = (resp.get("data") or {}).get("role")
         except Exception as e:
             print(f"查询群成员身份失败: {e}")
@@ -723,7 +748,7 @@ def handle_admin_command(data):
         return True
 
     account = arg
-    if not re.match(r"^[A-Za-z0-9_]{3,15}$", account):
+    if not ACCOUNT_RE.match(account):
         return False
 
     user = users_db.get(account)
@@ -782,14 +807,13 @@ def send_web_message(account, raw_text, req):
     username = users_db[account].get("nickname", account)
     client_ip = get_real_ip(req)
     current_time = time.time()
-    clean_msg = re.sub(r"[^\w一-龥]", "", msg_text).lower()
 
     intercept_msg = None
     if len(msg_text) > MAX_MSG_LENGTH:
         intercept_msg = f"[系统拦截]：消息过长，最多允许 {MAX_MSG_LENGTH} 个字符。"
     elif "[CQ:" in msg_text:
         intercept_msg = "[系统拦截]：禁止发送带有特殊控制符的代码！"
-    elif any(w.lower() in clean_msg for w in BANNED_WORDS):
+    elif has_banned_word(msg_text):
         intercept_msg = "[系统拦截]：发送失败，您的消息包含违规词汇！"
     elif msg_text == ip_last_message.get(client_ip, ""):
         intercept_msg = "[系统拦截]：请勿连续发送完全相同的内容。"
@@ -833,7 +857,7 @@ def send_web_message(account, raw_text, req):
             reply_prefix_web = f'<span class="reply-text">[回复 @{html.escape(t_sender)}: {html.escape(t_text)}]</span><br/>'
 
     # 每个被 @ 的名字只查一次：QQ 侧换成真正的 @，回声侧换成对方的群名片
-    mention_pattern = r"\[@([^\]]+)\]|(?<![\w.-])@([\w一-龥·_-]+)"
+    mention_pattern = r"\[@([^\]]+)\]|(?<![\w.-])@([\w\u4e00-\u9fa5·_-]+)"
     mentions = {}
     for match in re.finditer(mention_pattern, clean_text):
         name = match.group(1) or match.group(2)
@@ -862,11 +886,7 @@ def send_web_message(account, raw_text, req):
     remember_echo(f"{reply_prefix_qq}[{location} - {username}] {echo_clean_text}")
 
     try:
-        resp = requests.post(
-            "http://127.0.0.1:3000/send_group_msg",
-            json={"group_id": TARGET_GROUP_ID, "message": full_message},
-            timeout=3,
-        ).json()
+        resp = onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": full_message}, timeout=3)
     except Exception as e:
         print(f"发送到QQ失败: {e}")
         return "[系统异常]：连接 QQ 机器人后端失败。"
@@ -884,1001 +904,6 @@ def send_web_message(account, raw_text, req):
         qq_msg_id=qq_msg_id,
     )
     return None
-
-
-LOGIN_WML = """<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE wml PUBLIC "-//WAPFORUM//DTD WML 1.1//EN" "http://www.wapforum.org/DTD/wml_1.1.xml">
-<wml>
-<head><meta http-equiv="Cache-Control" content="max-age=0"/></head>
-<card id="login" title="登录"><p align="left"><b>WapChatQQ</b>{%if error%}<b>[{{error}}]</b>{%endif%}{%if success%}<b>[{{success}}]</b>{%endif%}<br/>账号:<input name="account" type="text" emptyok="false" format="*M"/><br/>密码:<input name="password" type="password" emptyok="false"/><br/>理由(注册才填):<input name="reason" type="text" emptyok="true" maxlength="60"/><br/><anchor>[登录]<go href="login" method="post"><postfield name="account" value="$(account)"/><postfield name="password" value="$(password)"/><postfield name="login_btn" value="1"/></go></anchor> <anchor>[注册]<go href="login" method="post"><postfield name="account" value="$(account)"/><postfield name="password" value="$(password)"/><postfield name="reason" value="$(reason)"/><postfield name="register_btn" value="1"/></go></anchor></p></card>
-</wml>
-"""
-
-NOKIA_WML = """<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE wml PUBLIC "-//WAPFORUM//DTD WML 1.1//EN" "http://www.wapforum.org/DTD/wml_1.1.xml">
-<wml>
-    <head>
-        <meta http-equiv="Cache-Control" content="max-age=0"/>
-    </head>
-    
-    <card id="chat" title="WapChat QQ">
-        <onevent type="onenterforward">
-            <refresh>
-                <setvar name="message" value=""/>
-            </refresh>
-        </onevent>
-        <p>
-            <b>WapChatQQ({{ online_count }}在线)</b> <a href="#options">[选项]</a><br/>
-            --------<br/>
-            {% if notice %}{{ notice }}<br/>{% endif %}
-            发言:<input name="message" type="text" emptyok="true" format="*M"/><br/>
-            <anchor>[发送]
-                <go href="./" method="post">
-                    <postfield name="message" value="$(message)"/>
-                </go>
-            </anchor>
-            <anchor>[刷新]
-                <go href="./" method="post">
-                    <postfield name="r" value="1"/>
-                </go>
-            </anchor><br/>
-            --------<br/>
-            {% if not history %}暂无消息<br/>{% endif %}
-            {% for msg in history %}
-                <b>{{ msg.get('sender_title', 'QQ群') }}</b><br/>
-                {{ msg.wml_text | safe }}<br/>
-            {% endfor %}
-        </p>
-    </card>
-
-    <card id="options" title="选项菜单">
-        <p>
-            <a href="#rename">改名</a><br/>
-            <a href="logout">注销</a><br/>
-            <a href="#chat">返回聊天</a>
-        </p>
-    </card>
-
-    <card id="rename" title="修改昵称">
-        <p>
-            当前昵称: {{ saved_username }}<br/>
-            新昵称:<input name="new_name" type="text" emptyok="false"/><br/>
-            <anchor>[确认保存]
-                <go href="rename_wml" method="post">
-                    <postfield name="new_name" value="$(new_name)"/>
-                </go>
-            </anchor><br/>
-            <a href="#options">返回选项</a>
-        </p>
-    </card>
-</wml>
-"""
-
-NOKIA_HTML = """<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-    <meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>WapChat QQ</title>
-    <style type="text/css">
-/* <![CDATA[ */
-        * { -webkit-box-sizing: border-box; -moz-box-sizing: border-box; box-sizing: border-box; }
-        body { margin: 0; padding: 0; background-color: #ffffff; color: #000000; font-family: sans-serif; font-size: 13px; }
-        h2 { font-size: 14px; margin: 0; padding: 2px 6px; border-bottom: 2px solid #000; background-color: #f5f5f5; line-height: 18px; }
-        #chat { padding: 6px; }
-        .msg { margin-bottom: 4px; border-bottom: 1px dashed #cccccc; padding: 0 0 4px 0; font-size: 12px; line-height: 1.3; word-wrap: break-word; }
-        .user-msg { color: #000000; font-weight: bold; }
-        .ai-msg { color: #333333; }
-        .input-area { padding: 6px; background-color: #f5f5f5; border-bottom: 2px solid #000; }
-        #userInput { width: 100%; height: 27px; padding: 2px 5px; font-size: 13px; border: 1px solid #000; vertical-align: middle; display: block; border-radius: 0; box-sizing: border-box; -webkit-box-sizing: border-box; }
-        #sendBtn { width: 100%; height: 27px; border: 1px solid #000; background-color: #dddddd; color: #000; font-weight: bold; font-size: 13px; vertical-align: middle; cursor: pointer; display: block; border-radius: 0; box-sizing: border-box; -webkit-box-sizing: border-box; -webkit-appearance: none; }
-        #sendBtn:active { background-color: #999999; color: #fff; }
-        #attachBtn { width: 100%; height: 27px; border: 1px solid #000; background-color: #eee; color: #000; font-weight: bold; font-size: 13px; padding: 0; margin: 0; display: block; border-radius: 0; box-sizing: border-box; -webkit-box-sizing: border-box; -webkit-appearance: none; }
-        .action-at { color: blue; text-decoration: none; }
-        .action-reply { color: #ff6600; text-decoration: none; }
-        .reply-text { color: #ff6600; font-size: 11px; }
-        .nav-links { float: right; font-size: 12px; font-weight: normal; }
-        .nav-links a { color: blue; text-decoration: none; margin-left: 8px; }
-    /* ]]> */
-    </style>
-    {% if theme == 'dark' %}
-    <style type="text/css">
-/* <![CDATA[ */
-        body { background-color: #000000 !important; color: #aaaaaa !important; }
-        h2 { border-bottom: 2px solid #555555 !important; background-color: #111111 !important; color: #dddddd !important; }
-        .input-area { background-color: #111111 !important; border-bottom: 2px solid #555555 !important; }
-        .msg { border-bottom: 1px dashed #333333 !important; }
-        .user-msg { color: #dddddd !important; }
-        .ai-msg { color: #888888 !important; }
-        #userInput { background-color: #222222 !important; color: #ffffff !important; border-color: #555555 !important; }
-        #sendBtn, #attachBtn { background-color: #333333 !important; color: #dddddd !important; border-color: #555555 !important; }
-        #optionsMenu, #attachMenu { background: #111111 !important; border-color: #555555 !important; }
-        #optionsMenu a, #attachMenu > div { border-bottom-color: #555555 !important; }
-        #attachMenu { color: #dddddd !important; }
-        .nav-links a { color: blue !important; }
-        .action-at { color: blue !important; }
-        .action-reply { color: #ff6600 !important; }
-        .reply-text { color: #ff6600 !important; }
-    /* ]]> */
-    </style>
-    {% endif %}
-</head>
-<body>
-    <h2>
-        <span class="nav-links">
-            <a href="javascript:toggleMenu();">[选项▼]</a>
-        </span>
-        WapChat QQ 
-        <a id="onlineCount" href="/online" style="font-size:12px; font-weight:normal; color:green; text-decoration:underline;">({{ online_count }}在线)</a>
-    </h2>
-    
-    <div id="optionsMenu" style="display:none; position:absolute; top:30px; right:6px; width:50px; background:#fafafa; border:1px solid #000; padding:0; z-index:999; text-align:center;">
-        <a href="/toggle_theme" style="display:block; font-size:12px; color:#888; text-decoration:none; border-bottom:1px solid #000; padding:3px 0; margin:0;">{% if theme == 'dark' %}日间{% else %}夜间{% endif %}</a>
-        <a href="/history" style="display:block; font-size:12px; color:#ff6600; text-decoration:none; border-bottom:1px solid #000; padding:3px 0; margin:0;">历史</a>
-        <a href="/drive" style="display:block; font-size:12px; color:green; text-decoration:none; border-bottom:1px solid #000; padding:3px 0; margin:0;">网盘</a>
-        <a href="{{ ai_url }}" style="display:block; font-size:12px; color:purple; text-decoration:none; border-bottom:1px solid #000; padding:3px 0; margin:0;">智能</a>
-        <a href="javascript:changeName(); toggleMenu();" style="display:block; font-size:12px; color:blue; text-decoration:none; border-bottom:1px solid #000; padding:3px 0; margin:0;">改名</a>
-        <a href="/logout" style="display:block; font-size:12px; color:red; text-decoration:none; padding:3px 0; margin:0;">注销</a>
-    </div>
-    
-    <div id="attachMenu" style="display:none; position:absolute; top:65px; left:0; width:50px; background:#fafafa; border:1px solid #000; padding:0; z-index:999; text-align:center;">
-        <div style="position:relative; width:100%; border-bottom:1px solid #000; overflow:hidden;">
-            <a href="javascript:goToEmoji();" style="display:block; font-size:12px; color:#ff00ff; text-decoration:none; padding:3px 0; margin:0;">颜文字</a>
-        </div>
-        <div style="position:relative; width:100%; border-bottom:1px solid #000; overflow:hidden;">
-            <div style="display:block; font-size:12px; color:blue; padding:3px 0; margin:0;">图片</div>
-            <form id="uploadForm" action="/api/upload_image" method="POST" enctype="multipart/form-data" target="uploadTarget" style="position:absolute; top:0; left:0; width:100%; height:100%; margin:0; padding:0;">
-                <input type="file" name="image" accept="image/*" onchange="handleAutoUpload('uploadForm', '图片');" style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0.01; filter:alpha(opacity=1); cursor:pointer; font-size:50px; outline:none;" />
-            </form>
-        </div>
-        <div style="position:relative; width:100%; border-bottom:1px solid #000; overflow:hidden;">
-            <div style="display:block; font-size:12px; color:green; padding:3px 0; margin:0;">文件</div>
-            <form id="uploadFileForm" action="/api/upload_file" method="POST" enctype="multipart/form-data" target="uploadTarget" style="position:absolute; top:0; left:0; width:100%; height:100%; margin:0; padding:0;">
-                <input type="file" name="file" onchange="handleAutoUpload('uploadFileForm', '文件');" style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0.01; filter:alpha(opacity=1); cursor:pointer; font-size:50px; outline:none;" />
-            </form>
-        </div>
-        <iframe id="uploadTarget" name="uploadTarget" style="display:none;"></iframe>
-    </div>
-
-    <div class="input-area">
-        <form onsubmit="sendMessage(); return false;">
-            <table style="width: 100%; table-layout: fixed;" cellspacing="0" cellpadding="0" border="0">
-                <tr>
-                    <td style="width: 66%; padding-right: 2px; vertical-align: middle;">
-                        <input type="text" id="userInput" placeholder="在此输入..." spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" />
-                    </td>
-                    <td style="width: 10%; padding-right: 2px; vertical-align: middle;">
-                        <input type="button" id="attachBtn" value="▼" onclick="toggleAttachMenu();" />
-                    </td>
-                    <td style="width: 24%; vertical-align: middle;">
-                        <input type="button" id="sendBtn" value="发送" onclick="sendMessage();" />
-                    </td>
-                </tr>
-            </table>
-        </form>
-    </div>
-
-    <div id="chat">
-        {% for msg in history|reverse %}
-        <div class="msg ai-msg" id="msg_{{ msg.id }}">
-            <div style="overflow:hidden; margin-bottom:2px;">
-                <b style="float:left;">{{ msg.get('sender_title', 'QQ群') }}:</b>
-                {% if msg.pure_sender %}
-                <span style="float:right;">
-                    <a href="javascript:atUser('{{ msg.pure_sender | replace("'", "") | replace('"', '') }}');" class="action-at">[@]</a>
-                    <a href="javascript:replyMsg('{{ msg.id }}', '{{ msg.pure_sender | replace("'", "") | replace('"', '') }}');" class="action-reply">[回]</a>
-                </span>
-                {% endif %}
-            </div>
-            <div style="clear:both;">{{ msg.text | safe }}</div>
-        </div>
-        {% endfor %}
-        <div class="msg ai-msg"><b>系统:</b><br/>连接就绪，正在监听 QQ 群消息...</div>
-    </div>
-
-    <a name="bottom" id="bottom"></a>
-
-    <script type="text/javascript">
-/* <![CDATA[ */
-        if (typeof XMLHttpRequest === "undefined") {
-            window.XMLHttpRequest = function () {
-                try { return new ActiveXObject("Msxml2.XMLHTTP.6.0"); } catch (e) {}
-                try { return new ActiveXObject("Msxml2.XMLHTTP.3.0"); } catch (e) {}
-                try { return new ActiveXObject("Microsoft.XMLHTTP"); } catch (e) {}
-                throw new Error("此浏览器不支持 AJAX");
-            };
-        }
-        if (!window.JSON) {
-            window.JSON = {
-                parse: function (sJSON) { try { return eval('(' + sJSON + ')'); } catch (e) { return null; } },
-                stringify: function (v) {
-                    var i, s = "", len;
-                    if (v === null) return "null";
-                    if (typeof v === 'number' || typeof v === 'boolean') return v.toString();
-                    if (typeof v === 'string') return '"' + v.replace(/"/g, '\\"') + '"';
-                    if (v instanceof Array) {
-                        len = v.length;
-                        for (i = 0; i < len; i++) { s += (s ? "," : "") + this.stringify(v[i]); }
-                        return "[" + s + "]";
-                    }
-                    if (typeof v === 'object') {
-                        for (i in v) { if (v.hasOwnProperty(i)) { s += (s ? "," : "") + '"' + i + '":' + this.stringify(v[i]); } }
-                        return "{" + s + "}";
-                    }
-                    return "";
-                }
-            };
-        }
-
-        var chatBox = document.getElementById('chat');
-        var input = document.getElementById('userInput');
-        var btn = document.getElementById('sendBtn');
-
-        function atUser(name) {
-            if (!name) return;
-            input.value += '[@' + name + '] ';
-            input.focus();
-        }
-        function replyMsg(id, name) {
-            if (!id) return;
-            var val = input.value.replace(/^\\[回复:\\d+\\]\\s*/, '');
-            if (name && val.indexOf('[@' + name + ']') === -1) {
-                val = '[@' + name + '] ' + val;
-            }
-            input.value = '[回复:' + id + '] ' + val;
-            input.focus();
-        }
-        function toggleMenu() {
-            var menu = document.getElementById('optionsMenu');
-            if (menu.style.display === 'none' || menu.style.display === '') {
-                menu.style.display = 'block';
-            } else {
-                menu.style.display = 'none';
-            }
-        }
-        var myUsername = "{{ saved_username }}";
-        function getCookie(name) {
-            var arr, reg = new RegExp("(^| )" + name + "=([^;]*)(;|$)");
-            if (arr = document.cookie.match(reg)) return decodeURIComponent(arr[2]);
-            else return "";
-        }
-        function goToEmoji() {
-            var currentText = document.getElementById('userInput').value;
-            document.cookie = "nokia_draft=" + encodeURIComponent(currentText) + "; path=/";
-            var w = window.innerWidth || document.documentElement.clientWidth || document.body.clientWidth || 240;
-            var h = window.innerHeight || document.documentElement.clientHeight || document.body.clientHeight || 320;
-            var cols = Math.floor(w / 80); 
-            var rows = Math.floor((h - 90) / 32); 
-            var limit = cols * rows;
-            limit = Math.floor(limit * 0.8);
-            if (limit < 8) limit = 8;
-            if (limit > 500) limit = 500;
-            document.cookie = "emoji_limit=" + limit + "; path=/";
-
-            window.location.href = '/emojis';
-        }
-        var draftText = getCookie('nokia_draft');
-        if (draftText !== "") {
-            document.getElementById('userInput').value = draftText;
-            document.cookie = "nokia_draft=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-            document.getElementById('userInput').focus();
-        }
-        function getElementLeft(element) {
-            var actualLeft = element.offsetLeft;
-            var current = element.offsetParent;
-            while (current !== null) {
-                actualLeft += current.offsetLeft;
-                current = current.offsetParent;
-            }
-            return actualLeft;
-        }
-        function toggleAttachMenu() {
-            var menu = document.getElementById('attachMenu');
-            var btn = document.getElementById('attachBtn');
-            
-            if (menu.style.display === 'none' || menu.style.display === '') {
-                var btnWidth = btn.offsetWidth;
-                var btnLeft = getElementLeft(btn);
-                var finalWidth = btnWidth < 50 ? 50 : btnWidth;
-                var finalLeft = Math.floor(btnLeft - ((finalWidth - btnWidth) / 2));
-                menu.style.width = finalWidth + 'px';
-                menu.style.left = finalLeft + 'px';
-                menu.style.right = 'auto';
-                
-                menu.style.display = 'block';
-            } else {
-                menu.style.display = 'none';
-            }
-        }
-        function handleAutoUpload(formId, typeName) {
-            var form = document.getElementById(formId);
-            var fileInput = form.getElementsByTagName('input')[0];
-            if (!fileInput.value) return; 
-            form.submit();
-            toggleAttachMenu();
-            addMessage('系统', typeName + '正在后台发送中，请稍候...', true);
-        }
-        function uploadCallback(status, msg) {
-            var menu = document.getElementById('attachMenu');
-            menu.style.display = 'none';
-            var imgInput = document.getElementById('uploadForm').getElementsByTagName('input')[0];
-            if(imgInput) imgInput.value = '';
-            
-            var fileInput = document.getElementById('uploadFileForm').getElementsByTagName('input')[0];
-            if(fileInput) fileInput.value = '';
-            
-            if (status === 'ok') {
-                addMessage('系统', '发送成功！', true);
-                if (pollTimer) clearTimeout(pollTimer);
-                currentInterval = baseInterval;
-                doPoll();
-            } else {
-                addMessage('系统', '发送失败: ' + msg, true);
-            }
-        }
-        function changeName() {
-            var newName = prompt("请输入您的新昵称：\\n(此操作不会更改您的登录账号)", myUsername);
-            if (newName !== null) {
-                newName = newName.replace(/^\\s+|\\s+$/g, '');
-                if (newName !== '') {
-                    var xhr = new XMLHttpRequest();
-                    xhr.open('POST', '/api/change_name?t=' + new Date().getTime(), true);
-                    xhr.setRequestHeader('Content-Type', 'application/json');
-                    xhr.onreadystatechange = function () {
-                        if (xhr.readyState === 4) {
-                            if (xhr.status === 200) {
-                                var res = JSON.parse(xhr.responseText);
-                                if (res.status === 'ok') {
-                                    myUsername = res.new_name;
-                                    addMessage('系统', '昵称已成功更改为: ' + myUsername, true);
-                                } else {
-                                    addMessage('系统', '改名失败: ' + res.msg, true);
-                                }
-                            } else {
-                                addMessage('系统', '网络请求失败，请稍后重试', true);
-                            }
-                        }
-                    };
-                    xhr.send(JSON.stringify({ new_name: newName }));
-                } else {
-                    addMessage('系统', '昵称不能为空，取消修改。', true);
-                }
-            }
-        }
-        var lastMsgId = {{ last_id }}; 
-
-        function addMessage(sender_title, text, isAi, pure_sender, msg_id) {
-            var div = document.createElement('div');
-            div.className = 'msg ' + (isAi ? 'ai-msg' : 'user-msg');
-            if (msg_id !== undefined && msg_id !== null) {
-                div.id = 'msg_' + msg_id;
-            }
-            
-            var actionLinks = '';
-            if (pure_sender && msg_id) {
-                var safeName = pure_sender.replace(/['"]/g, '');
-                var atLink = '<a href="javascript:atUser(' + "'" + safeName + "'" + ');" class="action-at">[@]</a>';
-                var repLink = '&nbsp;<a href="javascript:replyMsg(' + "'" + msg_id + "'" + ', ' + "'" + safeName + "'" + ');" class="action-reply">[回]</a>';
-                actionLinks = '<span style="float:right;">' + atLink + repLink + '</span>';
-            }
-            div.innerHTML = '<div style="overflow:hidden; margin-bottom:2px;"><b style="float:left;">' + sender_title + ':</b>' + actionLinks + '</div><div style="clear:both;">' + text.replace(/\\n/g, '<br/>') + '</div>';
-            
-            if (chatBox.firstChild) {
-                chatBox.insertBefore(div, chatBox.firstChild);
-            } else {
-                chatBox.appendChild(div);
-            }
-            window.scrollTo(0, 0);
-
-            while (chatBox.children.length > 26) { 
-                chatBox.removeChild(chatBox.children[chatBox.children.length - 1]); 
-            }
-        }
-
-        function sendMessage() {
-            var text = input.value;
-            if (text === null || text === '') return;
-            
-            input.value = '';
-            btn.disabled = true;
-            btn.value = '发送中';
-
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/sync?t=' + new Date().getTime(), true);
-            xhr.setRequestHeader('Content-Type', 'application/json');
-
-            xhr.onreadystatechange = function () {
-                if (xhr.readyState === 4) {
-                    btn.disabled = false;
-                    btn.value = '发送';
-                    if (xhr.status === 200) {
-                        try {
-                            var res = JSON.parse(xhr.responseText);
-                            if (res.online_count !== undefined) {
-                                var ocSpan = document.getElementById('onlineCount');
-                                if (ocSpan) ocSpan.innerHTML = '(' + res.online_count + '在线)';
-                            }
-                            if (res.messages && res.messages.length > 0) {
-                                for (var i = 0; i < res.messages.length; i++) {
-                                    var m = res.messages[i];
-                                    if (m.recall_target_id !== undefined && m.recall_target_id !== null) {
-                                        var targetDiv = document.getElementById('msg_' + m.recall_target_id);
-                                        if (targetDiv) {
-                                            targetDiv.innerHTML = '<div style="color:#999; font-size:12px; margin-bottom:2px;"><i>[该消息已被撤回]</i></div>';
-                                        }
-                                    }
-                                    if (m.id === undefined || m.id > lastMsgId) {
-                                        var safeText = m.text.replace(/[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[\\u2600-\\u27BF]/g, '');
-                                        addMessage(m.sender_title, safeText, true, m.pure_sender, m.id);
-                                        if (m.id !== undefined) {
-                                            lastMsgId = m.id;
-                                        }
-                                    }
-                                }
-                            }
-                            if (res.last_id !== undefined && res.last_id > lastMsgId) {
-                                lastMsgId = res.last_id;
-                            }
-                        } catch (e) {
-                            addMessage('系统', '解析数据失败', true);
-                        }
-                    } else {
-                        addMessage('系统', '网络请求失败，状态码: ' + xhr.status, true);
-                    }
-                }
-            };
-            var requestData = JSON.stringify({ message: text, username: myUsername, last_id: lastMsgId });
-            currentInterval = baseInterval;
-            if (pollTimer) clearTimeout(pollTimer);
-            pollTimer = setTimeout(doPoll, currentInterval);
-            
-            xhr.send(requestData);
-        }
-
-        var baseInterval = 5000;  
-        var maxInterval = 25000;   
-        var currentInterval = baseInterval;
-        var pollTimer = null;
-        var isPolling = false;
-
-        function doPoll() {
-            if (isPolling) return; 
-            
-            isPolling = true;
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/sync?t=' + new Date().getTime(), true);
-            xhr.setRequestHeader('Content-Type', 'application/json');
-            xhr.onreadystatechange = function () {
-                if (xhr.readyState === 4) {
-                    isPolling = false; 
-                    var hasNewMessage = false; 
-
-                    if (xhr.status === 200) {
-                        try {
-                            var res = JSON.parse(xhr.responseText);
-                            if (res.online_count !== undefined) {
-                                var ocSpan = document.getElementById('onlineCount');
-                                if (ocSpan) ocSpan.innerHTML = '(' + res.online_count + '在线)';
-                            }
-                            if (res.messages && res.messages.length > 0) {
-                                for (var i = 0; i < res.messages.length; i++) {
-                                    var m = res.messages[i];
-                                    if (m.recall_target_id !== undefined && m.recall_target_id !== null) {
-                                        var targetDiv = document.getElementById('msg_' + m.recall_target_id);
-                                        if (targetDiv) {
-                                            targetDiv.innerHTML = '<div style="color:#999; font-size:12px; margin-bottom:2px;"><i>[该消息已被撤回]</i></div>';
-                                        }
-                                    }
-                                    if (m.id === undefined || m.id > lastMsgId) {
-                                        var safeText = m.text.replace(/[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[\\u2600-\\u27BF]/g, '');
-                                        addMessage(m.sender_title, safeText, true, m.pure_sender, m.id);
-                                        if (m.id !== undefined) {
-                                            lastMsgId = m.id;
-                                            hasNewMessage = true; 
-                                        }
-                                    }
-                                }
-                            }
-                            if (res.last_id !== undefined && res.last_id > lastMsgId) {
-                                lastMsgId = res.last_id;
-                            }
-                        } catch (e) {}
-                    }
-                    if (hasNewMessage) {
-                        currentInterval = baseInterval;
-                    } else {
-                        currentInterval = Math.min(currentInterval + 2000, maxInterval);
-                    }
-                    pollTimer = setTimeout(doPoll, currentInterval);
-                }
-            };
-            xhr.send(JSON.stringify({ message: "", last_id: lastMsgId })); 
-        }
-        pollTimer = setTimeout(doPoll, currentInterval);
-    /* ]]> */
-</script>
-</body>
-</html>
-"""
-
-LOGIN_HTML = """<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-    <meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>身份验证</title>
-    <style type="text/css">
-/* <![CDATA[ */
-        
-        * { -webkit-box-sizing: border-box; -moz-box-sizing: border-box; box-sizing: border-box; }
-        body { margin: 0; padding: 0; background-color: #ffffff; color: #000000; font-family: sans-serif; font-size: 13px; }
-        
-        h2 { font-size: 14px; margin: 0; padding: 2px 6px; border-bottom: 2px solid #000; background-color: #f5f5f5; line-height: 18px; }
-      
-        .content { width: 95%; margin: 3px auto; }
-     
-        .msg { color: #d00; font-size: 12px; margin: 0 0 1px 0; font-weight: bold; line-height: 1.1; }
-        
-        label { font-size: 12px; font-weight: bold; display: block; margin-top: 2px; margin-bottom: 2px; }
-        
-        input[type="text"], input[type="password"] { width: 100%; height: 27px; border: 1px solid #000; margin: 0 0 5px 0; padding: 2px 5px; font-size: 13px; display: block; border-radius: 0; }
-        input[type="submit"] { width: 100%; height: 27px; border: 1px solid #000; background-color: #dddddd; color: #000; font-weight: bold; font-size: 13px; margin-top: 8px; cursor: pointer; display: block; border-radius: 0; -webkit-appearance: none; }
-        input[type="submit"]:active { background-color: #999999; color: #fff; }
-    /* ]]> */
-</style>
-    {% if theme == 'dark' %}
-    <style type="text/css">
-/* <![CDATA[ */
-        
-        html, body { background-color: #000000 !important; color: #aaaaaa !important; }
-        h2 { border-bottom: 2px solid #555555 !important; background-color: #111111 !important; color: #dddddd !important; }
-       
-        #chat, #history-content, #online-content { background: #111111 !important; border-color: #555555 !important; }
-        
-        .msg, .user-item { border-bottom: 1px dashed #333333 !important; }
-        .user-msg { color: #dddddd !important; }
-        .ai-msg { color: #888888 !important; }
-        .nickname { color: #dddddd !important; }
-        .account { color: #888888 !important; }
-        
-        input[type="text"], input[type="password"] { background-color: #111111 !important; color: #ffffff !important; border-color: #555555 !important; }
-        input[type="button"], input[type="submit"] { background-color: #333333 !important; color: #dddddd !important; border-color: #555555 !important; }
-        
-        #attachBtn { background-color: #222222 !important; }
-       
-        #optionsMenu, #attachMenu { background: #111111 !important; border-color: #555555 !important; }
-        #optionsMenu a, #attachMenu > div { border-bottom-color: #555555 !important; }
-        #attachMenu { color: #dddddd !important; }
-        
-        .nav a { background: #333333 !important; color: blue !important; border-color: #555555 !important; }
-       
-        .action-at { color: blue !important; } 
-      
-        .action-reply { color: #ff6600 !important; } 
-      
-        .reply-text { color: #ff6600 !important; }
-    /* ]]> */
-</style>
-    {% endif %}
-</head>
-<body>
-    <h2>WapChat QQ</h2>
-    <div class="content">
-        {% if error %}<div class="msg">{{ error }}</div>{% endif %}
-        {% if success %}<div class="msg" style="color: green;">{{ success }}</div>{% endif %}
-        <form method="POST" action="/login">
-            <label>登录账号(纯英数字):</label>
-            <input type="text" name="account" required="required" spellcheck="false" autocapitalize="off" autocomplete="off" />
-            <label>终端密码:</label>
-            <input type="password" name="password" required="required" />
-            <label>申请理由(仅注册时填写):</label>
-            <input type="text" name="reason" maxlength="60" autocomplete="off" />
-            <input type="submit" name="login_btn" value="登 录" />
-            <input type="submit" name="register_btn" value="注册新账号" />
-        </form>
-    </div>
-</body>
-</html>
-"""
-
-HISTORY_HTML = """<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-    <meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>聊天历史记录</title>
-    <style type="text/css">
-/* <![CDATA[ */
-      
-        * { -webkit-box-sizing: border-box; -moz-box-sizing: border-box; box-sizing: border-box; }
-        body { margin: 0; padding: 0; background-color: #ffffff; color: #000000; font-family: sans-serif; font-size: 13px; }
-      
-        h2 { font-size: 14px; margin: 0; padding: 2px 6px; border-bottom: 2px solid #000; background-color: #f5f5f5; line-height: 18px; }
-        
-        #history-content { padding: 6px; }
-
-        .search-bar input[type="text"] { background-color: #111111 !important; color: #ffffff !important; border-color: #555555 !important; }
-        .search-bar input[type="submit"] { background-color: #333333 !important; color: #dddddd !important; border-color: #555555 !important; }
-        .msg { margin-bottom: 4px; border-bottom: 1px dashed #cccccc; padding: 0 0 4px 0; font-size: 12px; line-height: 1.3; word-wrap: break-word; }
-        .ai-msg { color: #333333; }
-     
-        .nav { padding: 10px; text-align: center; font-size: 13px; font-weight: bold; }
-        .nav a { color: blue; text-decoration: none; padding: 0 5px; border: 1px solid #ccc; background: #eee; margin: 0 2px; display: inline-block; height: 22px; line-height: 20px; vertical-align: middle; box-sizing: border-box; -webkit-box-sizing: border-box; }
-    /* ]]> */
-</style>
-    {% if theme == 'dark' %}
-    <style type="text/css">
-/* <![CDATA[ */
-       
-        html, body { background-color: #000000 !important; color: #aaaaaa !important; }
-        h2 { border-bottom: 2px solid #555555 !important; background-color: #111111 !important; color: #dddddd !important; }
-        
-        #chat, #history-content, #online-content { background: #111111 !important; border-color: #555555 !important; }
-        
-        .msg, .user-item { border-bottom: 1px dashed #333333 !important; }
-        .user-msg { color: #dddddd !important; }
-        .ai-msg { color: #888888 !important; }
-        .nickname { color: #dddddd !important; }
-        .account { color: #888888 !important; }
-    
-        input[type="text"], input[type="password"] { background-color: #111111 !important; color: #ffffff !important; border-color: #555555 !important; }
-        input[type="button"], input[type="submit"] { background-color: #333333 !important; color: #dddddd !important; border-color: #555555 !important; }
-     
-        #attachBtn { background-color: #222222 !important; }
-        
-   
-        #optionsMenu, #attachMenu { background: #111111 !important; border-color: #555555 !important; }
-        #optionsMenu a, #attachMenu > div { border-bottom-color: #555555 !important; }
-        #attachMenu { color: #dddddd !important; }
-        
- 
-        .nav a { background: #333333 !important; color: blue !important; border-color: #555555 !important; }
-      
-        .action-at { color: blue !important; } 
-      
-        .action-reply { color: #ff6600 !important; } 
-       
-        .reply-text { color: #ff6600 !important; }
-    /* ]]> */
-</style>
-    {% endif %}
-</head>
-<body>
-    <h2>历史记录
-        <span style="float:right;">
-            <a href="/" style="font-size:12px; font-weight:normal; color:red; text-decoration:none;">[返回聊天]</a>
-        </span>
-    </h2>
-
-    <div class="search-bar" style="width: 95%; margin: 2px auto;">
-        <form action="/history" method="GET" style="margin:0; padding:0;">
-            <table style="width: 100%;" cellspacing="0" cellpadding="0" border="0">
-                <tr>
-                    <td style="width: 75%; padding-right: 2px;">
-                        <input type="text" name="q" value="{{ q }}" placeholder="搜点什么..." style="width: 100%; height: 22px; border: 1px solid #000; font-size: 12px; margin: 0; border-radius: 0; -webkit-box-sizing: border-box; box-sizing: border-box;" />
-                    </td>
-                    <td style="width: 25%;">
-                        <input type="submit" value="搜索" style="width: 100%; height: 22px; border: 1px solid #000; background-color: #eee; font-size: 12px; margin: 0; cursor: pointer; border-radius: 0; -webkit-appearance: none; -webkit-box-sizing: border-box; box-sizing: border-box;" />
-                    </td>
-                </tr>
-            </table>
-        </form>
-    </div>
-
-    <div id="history-content">
-        {% if not messages %}
-            <div class="msg">暂无更多历史记录...</div>
-        {% endif %}
-        
-        {% for msg in messages %}
-        <div class="msg ai-msg"><b>{{ msg.get('sender_title', 'QQ群') }}</b><br/>{{ msg.text | safe }}</div>
-        {% endfor %}
-    </div>
-
-    <div class="nav">
-        {% if page > 1 %}
-            <a href="/history?page={{ page - 1 }}{% if q %}&amp;q={{ q }}{% endif %}">上一页</a>
-        {% endif %}
-        
-        <form action="/history" method="GET" style="display:inline; margin:0; padding:0; vertical-align:middle;">
-            {% if q %}
-            <input type="hidden" name="q" value="{{ q }}" />
-            {% endif %}
-            <input type="text" name="page" value="{{ page }}" style="width:28px; height:22px; text-align:center; padding:0; margin:0; border:1px solid #999; font-size:12px; font-family:sans-serif; vertical-align:middle; border-radius:0; box-sizing:border-box; -webkit-box-sizing:border-box; -webkit-appearance:none;" />
-            
-            <span style="display:inline-block; vertical-align:middle; font-size:12px; font-family:sans-serif; font-weight:normal;"> / {{ total_pages }}</span>
-            
-            <input type="submit" value="跳" style="height:22px; border:1px solid #999; background:#eee; padding:0 5px; margin:0 0 0 2px; font-size:12px; vertical-align:middle; cursor:pointer; border-radius:0; box-sizing:border-box; -webkit-box-sizing:border-box; -webkit-appearance:none;" />
-        </form>
-        
-        {% if page < total_pages %}
-            <a href="/history?page={{ page + 1 }}{% if q %}&amp;q={{ q }}{% endif %}">下一页</a>
-        {% endif %}
-    </div>
-</body>
-</html>
-"""
-
-ONLINE_HTML = """<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-    <meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>在线人员</title>
-    <style type="text/css">
-/* <![CDATA[ */
-  
-        * { -webkit-box-sizing: border-box; -moz-box-sizing: border-box; box-sizing: border-box; }
-        body { margin: 0; padding: 0; background-color: #ffffff; color: #000000; font-family: sans-serif; font-size: 13px; }
-        
-   
-        h2 { font-size: 14px; margin: 0; padding: 2px 6px; border-bottom: 2px solid #000; background-color: #f5f5f5; line-height: 18px; }
-        
-
-        #online-content { padding: 6px; }
-        .user-item { margin-bottom: 4px; border-bottom: 1px dashed #cccccc; padding: 4px 0; font-size: 13px; line-height: 1.3; }
-        .nickname { font-weight: bold; color: #000000; }
-        .account { font-size: 11px; color: #666666; }
-    /* ]]> */
-</style>
-    {% if theme == 'dark' %}
-    <style type="text/css">
-/* <![CDATA[ */
-      
-        html, body { background-color: #000000 !important; color: #aaaaaa !important; }
-        h2 { border-bottom: 2px solid #555555 !important; background-color: #111111 !important; color: #dddddd !important; }
-        
-    
-        #chat, #history-content, #online-content { background: #111111 !important; border-color: #555555 !important; }
-        
-   
-        .msg, .user-item { border-bottom: 1px dashed #333333 !important; }
-        .user-msg { color: #dddddd !important; }
-        .ai-msg { color: #888888 !important; }
-        .nickname { color: #dddddd !important; }
-        .account { color: #888888 !important; }
-        
-      
-        input[type="text"], input[type="password"] { background-color: #111111 !important; color: #ffffff !important; border-color: #555555 !important; }
-        input[type="button"], input[type="submit"] { background-color: #333333 !important; color: #dddddd !important; border-color: #555555 !important; }
-       
-        #attachBtn { background-color: #222222 !important; }
-        
-     
-        #optionsMenu, #attachMenu { background: #111111 !important; border-color: #555555 !important; }
-        #optionsMenu a, #attachMenu > div { border-bottom-color: #555555 !important; }
-        #attachMenu { color: #dddddd !important; }
-       
-        .nav a { background: #333333 !important; color: blue !important; border-color: #555555 !important; }
-      
-        .action-at { color: blue !important; } 
-      
-        .action-reply { color: #ff6600 !important; } 
-       
-        .reply-text { color: #ff6600 !important; }
-    /* ]]> */
-</style>
-    {% endif %}
-</head>
-<body>
-    <h2>在线名单 ({{ users|length }}人)
-        <span style="float:right;">
-            <a href="/" style="font-size:12px; font-weight:normal; color:red; text-decoration:none;">[返回聊天]</a>
-        </span>
-    </h2>
-
-    <div id="online-content">
-        {% if not users %}
-            <div class="user-item">当前没有其他用户在线...</div>
-        {% else %}
-            {% for u in users %}
-            <div class="user-item">
-                <span style="color:green;">●</span> 
-                <span class="nickname">{{ u.nickname }}</span> 
-                <span class="account">({{ u.account }})</span>
-                {% if u.is_me %} <span style="font-size:11px; color:blue;">[我自己]</span> {% endif %}
-            </div>
-            {% endfor %}
-        {% endif %}
-    </div>
-</body>
-</html>
-"""
-
-EMOJI_HTML = """<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-    <meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>选择颜文字</title>
-    <style type="text/css">
-/* <![CDATA[ */
-        * { -webkit-box-sizing: border-box; -moz-box-sizing: border-box; box-sizing: border-box; }
-        body { margin: 0; padding: 0; background-color: #ffffff; color: #000000; font-family: sans-serif; font-size: 13px; }
-        h2 { font-size: 14px; margin: 0; padding: 2px 6px; border-bottom: 2px solid #000; background-color: #f5f5f5; line-height: 18px; }
-        #emoji-content { padding: 6px; text-align: center; }
-        
-        .kmj-btn { display: inline-block; padding: 3px 5px; margin: 3px; border: 1px solid #999; background: #eee; text-decoration: none; color: #000; font-size: 12px; line-height: 1.2; }
-        .kmj-btn:active { background: #ccc; }
-        
-        .nav { padding: 10px; text-align: center; font-size: 13px; font-weight: bold; }
-        .nav a { color: blue; text-decoration: none; padding: 0 5px; border: 1px solid #ccc; background: #eee; margin: 0 2px; display: inline-block; height: 22px; line-height: 22px; vertical-align: middle; }
-    /* ]]> */
-</style>
-    {% if theme == 'dark' %}
-    <style type="text/css">
-/* <![CDATA[ */
-        html, body { background-color: #000000 !important; color: #aaaaaa !important; }
-        h2 { border-bottom: 2px solid #555555 !important; background-color: #111111 !important; color: #dddddd !important; }
-        #emoji-content { background: #111111 !important; border-color: #555555 !important; }
-        .kmj-btn { border: 1px solid #555; background: #333; color: #ddd; }
-        .kmj-btn:active { background: #555; }
-        .nav a { background: #333333 !important; color: blue !important; border-color: #555555 !important; }
-    
-        .nav input[type="text"] { background-color: #111111 !important; color: #ffffff !important; border-color: #555555 !important; }
-        .nav input[type="submit"] { background-color: #333333 !important; color: #dddddd !important; border-color: #555555 !important; }
-    /* ]]> */
-</style>
-    {% endif %}
-</head>
-<body>
-    <h2>颜文字 ({{ page }}/{{ total_pages }})
-        <span style="float:right;">
-            <a href="/" style="font-size:12px; font-weight:normal; color:red; text-decoration:none;">[取消返回]</a>
-        </span>
-    </h2>
-
-    <div id="emoji-content">
-        {% for kmj in emojis %}
-            <a href="javascript:selectEmoji('{{ kmj.encoded }}');" class="kmj-btn">{{ kmj.raw }}</a>
-        {% endfor %}
-    </div>
-
-    <div class="nav">
-        {% if page > 1 %}<a href="/emojis?page={{ page - 1 }}">上一页</a>{% endif %}
-        
-        <form action="/emojis" method="GET" style="display:inline; margin:0; padding:0; vertical-align:middle;">
-            <input type="text" name="page" value="{{ page }}" style="width:28px; height:22px; line-height:20px; text-align:center; padding:0; margin:0; border:1px solid #999; font-size:12px; font-family:sans-serif; vertical-align:middle; border-radius:0;" />
-            <span style="vertical-align:middle; font-size:12px; font-family:sans-serif; font-weight:normal;"> / {{ total_pages }}</span>
-            <input type="submit" value="跳" style="height:22px; line-height:20px; border:1px solid #999; background:#eee; padding:0 5px; margin:0 0 0 2px; font-size:12px; vertical-align:middle; cursor:pointer; border-radius:0; -webkit-appearance:none;" />
-        </form>
-        
-        {% if page < total_pages %}<a href="/emojis?page={{ page + 1 }}">下一页</a>{% endif %}
-    </div>
-
-    <script type="text/javascript">
-/* <![CDATA[ */
-        function getCookie(name) {
-            var arr, reg = new RegExp("(^| )" + name + "=([^;]*)(;|$)");
-            if (arr = document.cookie.match(reg)) return decodeURIComponent(arr[2]);
-            else return "";
-        }
-        function selectEmoji(encodedEmoji) {
-            var emoji = decodeURIComponent(encodedEmoji);
-            var draft = getCookie("nokia_draft");
-            draft = draft + emoji; 
-            document.cookie = "nokia_draft=" + encodeURIComponent(draft) + "; path=/";
-            window.location.href = "/";
-        }
-    /* ]]> */
-</script>
-</body>
-</html>
-"""
-
-DRIVE_HTML = """<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-    <meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>群网盘</title>
-    <style type="text/css">
-/* <![CDATA[ */
-        * { -webkit-box-sizing: border-box; -moz-box-sizing: border-box; box-sizing: border-box; }
-        body { margin: 0; padding: 0; background-color: #ffffff; color: #000000; font-family: sans-serif; font-size: 13px; }
-        h2 { font-size: 14px; margin: 0; padding: 2px 6px; border-bottom: 2px solid #000; background-color: #f5f5f5; line-height: 18px; }
-      
-        #drive-content { padding: 6px; }
-        
-        .file-item { margin-bottom: 4px; border-bottom: 1px dashed #cccccc; padding: 4px 0; font-size: 13px; line-height: 1.3; word-wrap: break-word;}
-        .file-name { font-weight: bold; color: #000000; }
-        .file-meta { font-size: 11px; color: #666666; margin-top: 2px;}
-        .download-btn { color: blue; text-decoration: underline; font-weight: bold; }
-
-        .search-bar input[type="text"] { background-color: #ffffff; color: #000000; border-color: #000000; }
-        .search-bar input[type="submit"] { background-color: #eeeeee; color: #000000; border-color: #000000; }
-        .nav { padding: 10px; text-align: center; font-size: 13px; font-weight: bold; }
-        .nav a { color: blue; text-decoration: none; padding: 0 5px; border: 1px solid #ccc; background: #eee; margin: 0 2px; display: inline-block; height: 22px; line-height: 20px; vertical-align: middle; box-sizing: border-box; -webkit-box-sizing: border-box; }
-    /* ]]> */
-</style>
-    {% if theme == 'dark' %}
-    <style type="text/css">
-/* <![CDATA[ */
-        html, body { background-color: #000000 !important; color: #aaaaaa !important; }
-        h2 { border-bottom: 2px solid #555555 !important; background-color: #111111 !important; color: #dddddd !important; }
-        #drive-content { background: #111111 !important; border-color: #555555 !important; }
-        .file-item { border-bottom: 1px dashed #333333 !important; }
-        .file-name { color: #dddddd !important; }
-        .file-meta { color: #888888 !important; }
-        .download-btn { color: blue !important; }
-  
-        .search-bar input[type="text"] { background-color: #111111 !important; color: #ffffff !important; border-color: #555555 !important; }
-        .search-bar input[type="submit"] { background-color: #333333 !important; color: #dddddd !important; border-color: #555555 !important; }
-        .nav a { background: #333333 !important; color: blue !important; border-color: #555555 !important; }
-    /* ]]> */
-</style>
-    {% endif %}
-</head>
-<body>
-    <h2>群网盘
-        <span style="float:right;">
-            <a href="/" style="font-size:12px; font-weight:normal; color:red; text-decoration:none;">[返回聊天]</a>
-        </span>
-    </h2>
-
-    <div class="search-bar" style="width: 95%; margin: 2px auto;">
-        <form action="/drive" method="GET" style="margin:0; padding:0;">
-            <table style="width: 100%;" cellspacing="0" cellpadding="0" border="0">
-                <tr>
-                    <td style="width: 75%; padding-right: 2px;">
-                        <input type="text" name="q" value="{{ q }}" placeholder="搜文件名或上传者..." style="width: 100%; height: 22px; border: 1px solid #000; font-size: 12px; margin: 0; border-radius: 0; -webkit-box-sizing: border-box; box-sizing: border-box;" />
-                    </td>
-                    <td style="width: 25%;">
-                        <input type="submit" value="搜索" style="width: 100%; height: 22px; border: 1px solid #000; background-color: #eee; font-size: 12px; margin: 0; cursor: pointer; border-radius: 0; -webkit-appearance: none; -webkit-box-sizing: border-box; box-sizing: border-box;" />
-                    </td>
-                </tr>
-            </table>
-        </form>
-    </div>
-
-    <div id="drive-content">
-        {% if not files %}
-            <div class="file-item">网盘空空如也，或者没有搜到文件哦。</div>
-        {% else %}
-            {% for f in files %}
-            <div class="file-item">
-                <div class="file-name">{{ f.filename }}</div>
-                <div class="file-meta">
-                    上传者: {{ f.uploader }} | 大小: {{ f.size_mb }}MB <br/>
-                    时间: {{ f.upload_time }}
-                    <span style="float: right;">
-                        <a href="/api/download_file?id={{ f._id }}" class="download-btn">[下载]</a>
-                    </span>
-                </div>
-            </div>
-            {% endfor %}
-        {% endif %}
-    </div>
-
-    <div class="nav">
-        {% if page > 1 %}
-            <a href="/drive?page={{ page - 1 }}{% if q %}&amp;q={{ q }}{% endif %}">上一页</a>
-        {% endif %}
-        
-        <form action="/drive" method="GET" style="display:inline; margin:0; padding:0; vertical-align:middle;">
-            {% if q %}
-            <input type="hidden" name="q" value="{{ q }}" />
-            {% endif %}
-            <input type="text" name="page" value="{{ page }}" style="width:28px; height:22px; text-align:center; padding:0; margin:0; border:1px solid #999; font-size:12px; font-family:sans-serif; vertical-align:middle; border-radius:0; box-sizing:border-box; -webkit-box-sizing:border-box; -webkit-appearance:none;" />
-            
-            <span style="display:inline-block; vertical-align:middle; font-size:12px; font-family:sans-serif; font-weight:normal;"> / {{ total_pages }}</span>
-            
-            <input type="submit" value="跳" style="height:22px; border:1px solid #999; background:#eee; padding:0 5px; margin:0 0 0 2px; font-size:12px; vertical-align:middle; cursor:pointer; border-radius:0; box-sizing:border-box; -webkit-box-sizing:border-box; -webkit-appearance:none;" />
-        </form>
-        
-        {% if page < total_pages %}
-            <a href="/drive?page={{ page + 1 }}{% if q %}&amp;q={{ q }}{% endif %}">下一页</a>
-        {% endif %}
-    </div>
-</body>
-</html>
-"""
 
 
 def get_real_ip(req):
@@ -1986,38 +1011,15 @@ def get_ip_location(ip, req):
 
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
-    theme = request.cookies.get("nokia_theme", "light")
-    if request.method == "GET":
-        if get_active_account():
+    error = success = None
+    if request.method == "POST":
+        logged_in, error, success = process_login_form()
+        if logged_in:
             return redirect(url_for("index"))
+    elif get_active_account():
+        return redirect(url_for("index"))
 
-        return render_template_string(LOGIN_HTML, theme=theme)
-
-    account = request.form.get("account", "").strip()
-    password = request.form.get("password", "").strip()
-
-    if not account or not password:
-        return render_template_string(
-            LOGIN_HTML, error="账号和密码不能为空！", theme=theme
-        )
-
-    if not re.match(r"^[A-Za-z0-9_]{3,15}$", account):
-        return render_template_string(
-            LOGIN_HTML, error="账号只能包含3-15位字母、数字或下划线！", theme=theme
-        )
-
-    if "register_btn" in request.form:
-        ok, msg = register_account(
-            account, password, request.form.get("reason", ""), request
-        )
-        if ok:
-            return render_template_string(LOGIN_HTML, success=msg, theme=theme)
-        return render_template_string(LOGIN_HTML, error=msg, theme=theme)
-
-    error = try_login(account, password)
-    if error:
-        return render_template_string(LOGIN_HTML, error=error, theme=theme)
-    return redirect(url_for("index"))
+    return render_template("login.html", error=error, success=success)
 
 
 @app.route("/logout", methods=["GET"])
@@ -2028,51 +1030,21 @@ def logout():
 
 @app.route("/history", methods=["GET"])
 def view_history():
-    account = get_active_account()
-    if not account:
+    if not get_active_account():
         return redirect(url_for("login_page"))
 
-    page = request.args.get("page", 1, type=int)
-    q = request.args.get("q", "").strip()
-
-    if page < 1:
-        page = 1
-
     per_page = 25
-
-    query = {}
-    if q:
-        safe_q = re.escape(q)
-        query["$or"] = [
-            {"pure_text": {"$regex": safe_q, "$options": "i"}},
-            {"pure_sender": {"$regex": safe_q, "$options": "i"}},
-        ]
-
-    total_msgs = chat_collection.count_documents(query)
-    total_pages = (total_msgs + per_page - 1) // per_page if total_msgs > 0 else 1
-
-    if page > total_pages:
-        page = total_pages
-
-    skip_count = (page - 1) * per_page
+    q = request.args.get("q", "").strip()
+    query = search_query(q, "pure_text", "pure_sender")
+    page, total_pages, skip = paginate(chat_collection.count_documents(query), per_page)
 
     docs = list(
-        chat_collection.find(query, {"_id": 0})
-        .sort("id", -1)
-        .skip(skip_count)
-        .limit(per_page)
+        chat_collection.find(query, {"_id": 0}).sort("id", -1).skip(skip).limit(per_page)
     )
-
     docs.reverse()
 
-    theme = request.cookies.get("nokia_theme", "light")
-    return render_template_string(
-        HISTORY_HTML,
-        messages=docs,
-        page=page,
-        total_pages=total_pages,
-        theme=theme,
-        q=q,
+    return render_template(
+        "history.html", messages=docs, page=page, total_pages=total_pages, q=q
     )
 
 
@@ -2084,54 +1056,38 @@ def view_online_users():
 
     get_online_count()
 
-    active_users = []
-    for acc in online_sessions.keys():
-        nickname = users_db.get(acc, {}).get("nickname", acc)
-        nickname = filter_emoji(nickname)
-
-        active_users.append(
-            {
-                "account": acc,
-                "nickname": nickname,
-                "is_me": (acc == account),
-            }
-        )
-
+    active_users = [
+        {
+            "account": acc,
+            "nickname": filter_emoji(users_db.get(acc, {}).get("nickname", acc)),
+            "is_me": acc == account,
+        }
+        for acc in online_sessions
+    ]
     active_users.sort(key=lambda x: (not x["is_me"], x["account"]))
 
-    theme = request.cookies.get("nokia_theme", "light")
-    return render_template_string(ONLINE_HTML, users=active_users, theme=theme)
+    return render_template("online.html", users=active_users)
 
 
 @app.route("/emojis", methods=["GET"])
 def view_emojis():
-    account = get_active_account()
-    if not account:
+    if not get_active_account():
         return redirect(url_for("login_page"))
 
-    page = request.args.get("page", 1, type=int)
-    if page < 1:
-        page = 1
-
+    # 每页个数由聊天页按屏幕大小算好放在 cookie 里
     try:
-        per_page = int(request.cookies.get("emoji_limit", 40))
+        per_page = min(max(int(request.cookies.get("emoji_limit", 40)), 1), 500)
     except ValueError:
         per_page = 40
 
-    total_kmj = len(KAOMOJI_LIST)
-    total_pages = (total_kmj + per_page - 1) // per_page if total_kmj > 0 else 1
-    if page > total_pages:
-        page = total_pages
+    page, total_pages, skip = paginate(len(KAOMOJI_LIST), per_page)
+    emojis = [
+        {"raw": k, "encoded": urllib.parse.quote(k)}
+        for k in KAOMOJI_LIST[skip : skip + per_page]
+    ]
 
-    start_idx = (page - 1) * per_page
-    end_idx = start_idx + per_page
-    current_emojis = KAOMOJI_LIST[start_idx:end_idx]
-
-    safe_emojis = [{"raw": k, "encoded": urllib.parse.quote(k)} for k in current_emojis]
-
-    theme = request.cookies.get("nokia_theme", "light")
-    return render_template_string(
-        EMOJI_HTML, emojis=safe_emojis, page=page, total_pages=total_pages, theme=theme
+    return render_template(
+        "emojis.html", emojis=emojis, page=page, total_pages=total_pages
     )
 
 
@@ -2145,9 +1101,6 @@ def toggle_theme():
     resp = make_response(redirect(next_url))
     resp.set_cookie("nokia_theme", new_theme, max_age=31536000)
     return resp
-
-
-WEBHOOK_SECRET_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 
 
 @app.route("/api/change_name", methods=["POST"])
@@ -2167,25 +1120,14 @@ def change_name_api():
 def upload_image():
     account = get_active_account()
     if not account:
-        return '<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("error", "权限不足或未登录");/* ]]> */</script>'
+        return upload_result("error", "权限不足或未登录")
 
     file = request.files.get("image")
     if not file or file.filename == "":
-        return '<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("error", "未选择任何照片");/* ]]> */</script>'
+        return upload_result("error", "未选择任何照片")
 
     try:
-        img = Image.open(file.stream)
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-
-        max_size = 800
-        if img.width > max_size or img.height > max_size:
-            img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-
-        img_io = io.BytesIO()
-        img.save(img_io, "JPEG", quality=80)
-
-        b64_data = base64.b64encode(img_io.getvalue()).decode("utf-8")
+        b64_data = to_jpeg_b64(file.stream, 800, 800, 80)
         cq_code = f"[CQ:image,file=base64://{b64_data}]"
 
         username = users_db[account].get("nickname", account)
@@ -2194,18 +1136,10 @@ def upload_image():
 
         full_message = f"[{location} - {username}]\n{cq_code}"
 
-        requests.post(
-            "http://127.0.0.1:3000/send_group_msg",
-            json={"group_id": TARGET_GROUP_ID, "message": full_message},
-            timeout=8,
-        )
+        onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": full_message}, timeout=8)
 
         img_id = hashlib.md5(b64_data.encode("utf-8")).hexdigest()[:16]
-        images_collection.insert_one(
-            {"_id": img_id, "data": b64_data, "time": time.time()}
-        )
-
-        cleanup_old_images(500)
+        save_image(img_id, b64_data)
 
         add_chat_message(
             "消息",
@@ -2214,22 +1148,22 @@ def upload_image():
             "[图片]",
         )
 
-        return '<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("ok", "");/* ]]> */</script>'
+        return upload_result("ok")
 
     except Exception as e:
         print(f"上传图片失败: {e}")
-        return f'<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("error", "文件处理失败");/* ]]> */</script>'
+        return upload_result("error", "文件处理失败")
 
 
 @app.route("/api/upload_file", methods=["POST"])
 def upload_file():
     account = get_active_account()
     if not account:
-        return '<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("error", "权限不足或未登录");/* ]]> */</script>'
+        return upload_result("error", "权限不足或未登录")
 
     file = request.files.get("file")
     if not file or file.filename == "":
-        return '<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("error", "未选择任何文件");/* ]]> */</script>'
+        return upload_result("error", "未选择任何文件")
 
     try:
         filename = file.filename
@@ -2241,7 +1175,7 @@ def upload_file():
 
         file_bytes = file.read()
         if not file_bytes:
-            return '<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("error", "不能发送空文件");/* ]]> */</script>'
+            return upload_result("error", "不能发送空文件")
 
         file_id = str(uuid.uuid4())
 
@@ -2265,11 +1199,7 @@ def upload_file():
         remember_echo(qq_notification_text)
 
         try:
-            requests.post(
-                "http://127.0.0.1:3000/send_group_msg",
-                json={"group_id": TARGET_GROUP_ID, "message": qq_notification_text},
-                timeout=3,
-            )
+            onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": qq_notification_text}, timeout=3)
         except Exception as e:
             print(f"发送文件前置文字提示失败: {e}")
 
@@ -2279,15 +1209,7 @@ def upload_file():
         # 机器人通过内部地址回来取文件；无论成败都要释放这份内存副本
         internal_file_cache[file_id] = {"bytes": file_bytes, "name": filename}
         try:
-            resp_data = requests.post(
-                "http://127.0.0.1:3000/upload_group_file",
-                json={
-                    "group_id": TARGET_GROUP_ID,
-                    "file": download_url,
-                    "name": filename,
-                },
-                timeout=60,
-            ).json()
+            resp_data = onebot("upload_group_file", {"group_id": TARGET_GROUP_ID, "file": download_url, "name": filename}, timeout=60)
         finally:
             internal_file_cache.pop(file_id, None)
 
@@ -2304,78 +1226,43 @@ def upload_file():
             f"[发送了文件: {filename}]",
         )
 
-        return '<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("ok", "");/* ]]> */</script>'
+        return upload_result("ok")
 
     except Exception as e:
         print(f"上传文件失败: {e}")
-        safe_error_msg = str(e).replace('"', "").replace("'", "").replace("\n", " ")
-        return f'<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("error", "{safe_error_msg}");/* ]]> */</script>'
+        return upload_result("error", e)
 
 
 @app.route("/drive", methods=["GET"])
 def view_drive():
-    account = get_active_account()
-    if not account:
+    if not get_active_account():
         return redirect(url_for("login_page"))
 
-    page = request.args.get("page", 1, type=int)
+    per_page = 20
     q = request.args.get("q", "").strip()
 
-    if page < 1:
-        page = 1
-
-    per_page = 20
-
     # 旧版本存在 R2 上的文件(只有 r2_key 没有 data)已无法读取，不再列出
-    query = {"data": {"$exists": True}}
-    if q:
-        safe_q = re.escape(q)
-        query["$or"] = [
-            {"filename": {"$regex": safe_q, "$options": "i"}},
-            {"uploader": {"$regex": safe_q, "$options": "i"}},
-        ]
-
-    total_files = files_collection.count_documents(query)
-    total_pages = (total_files + per_page - 1) // per_page if total_files > 0 else 1
-
-    if page > total_pages:
-        page = total_pages
-
-    skip_count = (page - 1) * per_page
-
-    file_docs = list(
-        files_collection.find(query, {"data": 0})
-        .sort("time", -1)
-        .skip(skip_count)
-        .limit(per_page)
-    )
+    query = {"data": {"$exists": True}, **search_query(q, "filename", "uploader")}
+    page, total_pages, skip = paginate(files_collection.count_documents(query), per_page)
 
     display_files = []
-    for f in file_docs:
+    for f in (
+        files_collection.find(query, {"data": 0}).sort("time", -1).skip(skip).limit(per_page)
+    ):
         size_bytes = f.get("size", 0)
-        size_mb = round(size_bytes / (1024 * 1024), 2) if size_bytes else "未知"
-
         dt = datetime.datetime.fromtimestamp(f.get("time", 0), tz=TZ_UTC8)
-
         display_files.append(
             {
                 "_id": f["_id"],
                 "filename": f.get("filename", "未知文件"),
                 "uploader": f.get("uploader", "系统"),
-                "size_mb": size_mb,
+                "size_mb": round(size_bytes / (1024 * 1024), 2) if size_bytes else "未知",
                 "upload_time": dt.strftime("%Y-%m-%d %H:%M"),
             }
         )
 
-    theme = request.cookies.get("nokia_theme", "light")
-
-    return render_template_string(
-        DRIVE_HTML,
-        files=display_files,
-        theme=theme,
-        page=page,
-        total_pages=total_pages,
-        q=q,
+    return render_template(
+        "drive.html", files=display_files, page=page, total_pages=total_pages, q=q
     )
 
 
@@ -2500,44 +1387,15 @@ def adapt_wml_to_xhtmlmp(wml_str, target_card=None):
 
 @app.route("/wml/login", methods=["GET", "POST"])
 def wml_login_page():
-    def render_adaptive_login(error=None, success=None):
-        raw_content = render_template_string(LOGIN_WML, error=error, success=success)
-        if is_mobile_device(request):
-            resp = make_response(raw_content)
-            resp.headers["Content-Type"] = "text/vnd.wap.wml; charset=utf-8"
-        else:
-            pc_content = adapt_wml_to_xhtmlmp(raw_content)
-            resp = make_response(pc_content)
-            resp.headers["Content-Type"] = "text/html; charset=utf-8"
-        return resp
+    error = success = None
+    if request.method == "POST":
+        logged_in, error, success = process_login_form()
+        if logged_in:
+            return redirect("/wml/")
+    elif get_active_account():
+        return redirect("/wml/")
 
-    if request.method == "GET":
-        if get_active_account():
-            return redirect(url_for("wml_index"))
-
-        return render_adaptive_login()
-
-    account = request.form.get("account", "").strip()
-    password = request.form.get("password", "").strip()
-
-    if not account or not password:
-        return render_adaptive_login(error="账号和密码不能为空！")
-
-    if not re.match(r"^[A-Za-z0-9_]{3,15}$", account):
-        return render_adaptive_login(error="账号仅限3-15位字母数字下划线！")
-
-    if "register_btn" in request.form:
-        ok, msg = register_account(
-            account, password, request.form.get("reason", ""), request
-        )
-        if ok:
-            return render_adaptive_login(success=msg)
-        return render_adaptive_login(error=msg)
-
-    error = try_login(account, password)
-    if error:
-        return render_adaptive_login(error=error)
-    return redirect("/wml/")
+    return wml_response(render_template("wml_login.xml", error=error, success=success))
 
 
 @app.route("/wml/logout", methods=["GET"])
@@ -2580,22 +1438,14 @@ def wml_index():
 
     online_sessions[account] = time.time()
 
-    raw_content = render_template_string(
-        NOKIA_WML,
+    raw_content = render_template(
+        "wml_chat.xml",
         history=wml_history,
         saved_username=filter_emoji(users_db[account].get("nickname", account)),
         online_count=get_online_count(),
         notice=notice,
     )
-    if is_mobile_device(request):
-        resp = make_response(raw_content)
-        resp.headers["Content-Type"] = "text/vnd.wap.wml; charset=utf-8"
-    else:
-        target_card = request.args.get("card", "chat")
-        pc_content = adapt_wml_to_xhtmlmp(raw_content, target_card)
-        resp = make_response(pc_content)
-        resp.headers["Content-Type"] = "text/html; charset=utf-8"
-    return resp
+    return wml_response(raw_content, request.args.get("card", "chat"))
 
 
 @app.route("/wml/rename_wml", methods=["POST"])
@@ -2614,26 +1464,15 @@ def index():
     if not account:
         return redirect(url_for("login_page"))
 
-    recent_history = chat_history[-25:]
-    last_id = chat_history[-1]["id"] if chat_history else 0
-
-    saved_username = users_db[account].get("nickname", account)
-
-    saved_username = filter_emoji(saved_username)
-
     online_sessions[account] = time.time()
-    current_online = get_online_count()
 
-    theme = request.cookies.get("nokia_theme", "light")
-    ai_url = os.environ.get("AI_URL", "#")
-    return render_template_string(
-        NOKIA_HTML,
-        history=recent_history,
-        last_id=last_id,
-        saved_username=saved_username,
-        online_count=current_online,
-        theme=theme,
-        ai_url=ai_url,
+    return render_template(
+        "chat.html",
+        history=chat_history[-25:],
+        last_id=chat_history[-1]["id"] if chat_history else 0,
+        saved_username=filter_emoji(users_db[account].get("nickname", account)),
+        online_count=get_online_count(),
+        ai_url=os.environ.get("AI_URL", "#"),
     )
 
 
@@ -2663,15 +1502,15 @@ def handle_nokia_ajax():
 
     intercept_msg = send_web_message(account, str(data.get("message", "")), request)
 
-    new_msgs = [m for m in chat_history if m["id"] > client_last_id]
     response_msgs = []
-
     if intercept_msg:
         response_msgs.append({"sender_title": "系统", "text": intercept_msg})
 
-    for m in new_msgs:
+    for m in chat_history:
+        if m["id"] <= client_last_id:
+            continue
         msg_dict = {
-            "id": m.get("id"),
+            "id": m["id"],
             "sender_title": m.get("sender_title", "QQ群"),
             "text": m["text"],
             "pure_sender": m.get("pure_sender", ""),
@@ -2681,15 +1520,11 @@ def handle_nokia_ajax():
 
         response_msgs.append(msg_dict)
 
-    new_last_id = chat_history[-1]["id"] if chat_history else client_last_id
-
-    current_online = get_online_count()
-
     return jsonify(
         {
             "messages": response_msgs,
-            "last_id": new_last_id,
-            "online_count": current_online,
+            "last_id": chat_history[-1]["id"] if chat_history else client_last_id,
+            "online_count": get_online_count(),
         }
     )
 
@@ -2721,15 +1556,11 @@ def receive_qq_msg():
         if handle_admin_command(data):
             return jsonify({"status": "admin_command"})
 
-        sender_name = data.get("sender", {}).get("nickname", "某人")
+        sender = data.get("sender", {})
+        sender_name = clean_qq_name(sender.get("nickname", "某人")) or "无名氏"
 
-        sender_name = filter_emoji(sender_name)
-        sender_name = re.sub(r"\[.*?\]", "", sender_name).strip()
-        if not sender_name:
-            sender_name = "无名氏"
-
-        sender_qq = str(data.get("sender", {}).get("user_id", ""))
-        if sender_qq and sender_name:
+        sender_qq = str(sender.get("user_id", ""))
+        if sender_qq:
             name_to_qq_cache[sender_name] = sender_qq
 
         raw_msg = ""
@@ -2750,34 +1581,11 @@ def receive_qq_msg():
                             headers = {"User-Agent": "Mozilla/5.0"}
                             resp = requests.get(img_url, headers=headers, timeout=5)
                             if resp.status_code == 200:
-                                img = Image.open(io.BytesIO(resp.content))
-                                if img.mode != "RGB":
-                                    img = img.convert("RGB")
-                                max_width = 240
-                                if img.width > max_width:
-                                    ratio = max_width / img.width
-                                    new_height = int(img.height * ratio)
-                                    img = img.resize(
-                                        (max_width, new_height),
-                                        Image.Resampling.LANCZOS,
-                                    )
-
-                                img_io = io.BytesIO()
-                                img.save(img_io, "JPEG", quality=70)
-                                b64_data = base64.b64encode(img_io.getvalue()).decode(
-                                    "utf-8"
+                                # 老手机屏幕窄，群里的图只按 240 宽存一份缩略图
+                                save_image(
+                                    img_id,
+                                    to_jpeg_b64(io.BytesIO(resp.content), 240, 100000, 70),
                                 )
-
-                                images_collection.insert_one(
-                                    {
-                                        "_id": img_id,
-                                        "data": b64_data,
-                                        "time": time.time(),
-                                    }
-                                )
-
-                                cleanup_old_images(500)
-
                         except Exception as e:
                             print(f"图床持久化或清理失败: {e}")
 
@@ -2864,11 +1672,7 @@ def receive_qq_msg():
 
                 if msg_id:
                     try:
-                        resp = requests.post(
-                            "http://127.0.0.1:3000/get_msg",
-                            json={"message_id": msg_id},
-                            timeout=1.5,
-                        ).json()
+                        resp = onebot("get_msg", {"message_id": msg_id}, timeout=1.5)
                         if resp and resp.get("status") in ["ok", "success"]:
                             orig_data = resp.get("data", {})
 
@@ -3059,15 +1863,7 @@ def receive_qq_msg():
 
                 if not file_url and file_id:
                     try:
-                        resp = requests.post(
-                            "http://127.0.0.1:3000/get_group_file_url",
-                            json={
-                                "group_id": TARGET_GROUP_ID,
-                                "file_id": file_id,
-                                "busid": file_busid,
-                            },
-                            timeout=2,
-                        ).json()
+                        resp = onebot("get_group_file_url", {"group_id": TARGET_GROUP_ID, "file_id": file_id, "busid": file_busid}, timeout=2)
                         if resp and resp.get("status") in ["ok", "success"]:
                             file_url = resp.get("data", {}).get("url", "")
                     except Exception:

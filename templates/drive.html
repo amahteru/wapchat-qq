@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}群网盘{% endblock %}
+{% block css %}
+{{ ui.item_css() }}
+        .item-meta { margin-top: 2px; }
+        .download-btn { color: blue; text-decoration: underline; font-weight: bold; }
+{{ ui.pager_css() }}
+{% endblock %}
+{% block dark_css %}
+{{ ui.item_dark_css() }}
+{{ ui.pager_dark_css() }}
+{% endblock %}
+{% block body %}
+{{ ui.header("群网盘") }}
+{{ ui.search_bar("/drive", q, "搜文件名或上传者...") }}
+
+    <div class="panel">
+        {% if not files %}
+            <div class="item">网盘空空如也，或者没有搜到文件哦。</div>
+        {% else %}
+            {% for f in files %}
+            <div class="item">
+                <div class="item-title">{{ f.filename }}</div>
+                <div class="item-meta">
+                    上传者: {{ f.uploader }} | 大小: {{ f.size_mb }}MB <br/>
+                    时间: {{ f.upload_time }}
+                    <span style="float: right;">
+                        <a href="/api/download_file?id={{ f._id }}" class="download-btn">[下载]</a>
+                    </span>
+                </div>
+            </div>
+            {% endfor %}
+        {% endif %}
+    </div>
+
+{{ ui.pager("/drive", page, total_pages, q) }}
+{% endblock %}

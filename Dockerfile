@@ -22,6 +22,7 @@ COPY app.py .
 COPY face_config.json .
 COPY all_output_result_kmj.txt .
 COPY sensitive_words.txt .
+COPY templates ./templates
 
 COPY start.sh .
 

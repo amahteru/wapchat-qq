@@ -26,6 +26,7 @@
 
 ```text
 ├── app.py                    # 核心后端代码 (Flask 网页路由、API 与拦截逻辑)
+├── templates/                # 页面模板 (base.html 为公共骨架，_macros.html 为共用片段)
 ├── Dockerfile                # 容器构建配置 (自动配置环境与 NapCatQQ 机器人)
 ├── start.sh                  # 容器启动脚本 (生成机器人配置并启动服务)
 ├── requirements.txt          # Python 依赖清单

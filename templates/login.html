@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}身份验证{% endblock %}
+{% block css %}
+        .content { width: 95%; margin: 3px auto; }
+        .notice { color: #d00; font-size: 12px; margin: 0 0 1px 0; font-weight: bold; line-height: 1.1; }
+        label { font-size: 12px; font-weight: bold; display: block; margin-top: 2px; margin-bottom: 2px; }
+        input[type="text"], input[type="password"] { width: 100%; height: 27px; border: 1px solid #000; margin: 0 0 5px 0; padding: 2px 5px; font-size: 13px; display: block; border-radius: 0; }
+        input[type="submit"] { width: 100%; height: 27px; border: 1px solid #000; background-color: #dddddd; color: #000; font-weight: bold; font-size: 13px; margin-top: 8px; cursor: pointer; display: block; border-radius: 0; -webkit-appearance: none; }
+        input[type="submit"]:active { background-color: #999999; color: #fff; }
+{% endblock %}
+{% block body %}
+    <h2>WapChat QQ</h2>
+    <div class="content">
+        {% if error %}<div class="notice">{{ error }}</div>{% endif %}
+        {% if success %}<div class="notice" style="color: green;">{{ success }}</div>{% endif %}
+        <form method="POST" action="/login">
+            <label>登录账号(纯英数字):</label>
+            <input type="text" name="account" required="required" spellcheck="false" autocapitalize="off" autocomplete="off" />
+            <label>终端密码:</label>
+            <input type="password" name="password" required="required" />
+            <label>申请理由(仅注册时填写):</label>
+            <input type="text" name="reason" maxlength="60" autocomplete="off" />
+            <input type="submit" name="login_btn" value="登 录" />
+            <input type="submit" name="register_btn" value="注册新账号" />
+        </form>
+    </div>
+{% endblock %}
