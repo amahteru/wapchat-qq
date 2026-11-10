@@ -14,7 +14,7 @@ RUN curl -o napcat.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/sc
     --proxy 0 \
     --confirm
 
-COPY app.py .
+COPY *.py ./
 COPY face_config.json .
 COPY all_output_result_kmj.txt .
 COPY sensitive_words.txt .

@@ -35,7 +35,7 @@
 {% block body %}
     <h2>
         <span class="nav-links">
-            <a href="javascript:toggleMenu('optionsMenu');">[选项▼]</a>
+            <a id="optionsBtn" href="javascript:toggleOptionsMenu();">[选项▼]</a>
         </span>
         WapChat QQ
         <a id="onlineCount" href="/online" style="font-size:12px; font-weight:normal; color:green; text-decoration:underline;">({{ online_count }}在线)</a>
@@ -45,7 +45,7 @@
         <a href="/toggle_theme" style="color:#888;">{% if theme == 'dark' %}日间{% else %}夜间{% endif %}</a>
         <a href="/history" style="color:#ff6600;">历史</a>
         <a href="/drive" style="color:green;">网盘</a>
-        <a href="javascript:changeName(); toggleMenu('optionsMenu');" style="color:blue;">改名</a>
+        <a href="javascript:changeName(); toggleOptionsMenu();" style="color:blue;">改名</a>
         <a href="/logout" class="last" style="color:red;">退出</a>
     </div>
 
@@ -200,22 +200,27 @@
             document.cookie = "nokia_draft=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
             input.focus();
         }
-        function getElementLeft(element) {
-            var actualLeft = element.offsetLeft;
-            var current = element.offsetParent;
-            while (current !== null) {
-                actualLeft += current.offsetLeft;
-                current = current.offsetParent;
-            }
-            return actualLeft;
+        function pageOffset(element, prop) {
+            var total = 0;
+            for (var el = element; el !== null; el = el.offsetParent) total += el[prop];
+            return total;
+        }
+        function placeBelow(menu, anchor) {
+            menu.style.top = (pageOffset(anchor, 'offsetTop') + anchor.offsetHeight + 2) + 'px';
+        }
+        function toggleOptionsMenu() {
+            var menu = document.getElementById('optionsMenu');
+            if (menu.style.display !== 'block') placeBelow(menu, document.getElementById('optionsBtn'));
+            toggleMenu('optionsMenu');
         }
         function toggleAttachMenu() {
             if (attachMenu.style.display !== 'block') {
                 var btnWidth = attachBtn.offsetWidth;
                 var finalWidth = btnWidth < 50 ? 50 : btnWidth;
                 attachMenu.style.width = finalWidth + 'px';
-                attachMenu.style.left = Math.floor(getElementLeft(attachBtn) - ((finalWidth - btnWidth) / 2)) + 'px';
+                attachMenu.style.left = Math.floor(pageOffset(attachBtn, 'offsetLeft') - ((finalWidth - btnWidth) / 2)) + 'px';
                 attachMenu.style.right = 'auto';
+                placeBelow(attachMenu, attachBtn);
             }
             toggleMenu('attachMenu');
         }

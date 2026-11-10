@@ -1,0 +1,95 @@
+import re
+
+import requests
+
+from common import LimitedDict, TARGET_GROUP_ID, filter_emoji
+
+
+ONEBOT_URL = "http://127.0.0.1:3000"
+
+
+qq_name_cache = LimitedDict(1000)
+
+
+def get_qq_name(group_id, qq):
+    qq_str = str(qq)
+    if qq_str in qq_name_cache:
+        return qq_name_cache[qq_str]
+    try:
+        resp = onebot("get_group_member_info", {"group_id": group_id, "user_id": int(qq)}, timeout=1.5)
+
+        if resp and resp.get("status") in ["ok", "success"]:
+            data = resp.get("data", {})
+            name = clean_qq_name(data.get("card") or data.get("nickname")) or qq_str
+
+            qq_name_cache[qq_str] = name
+            return name
+    except Exception as e:
+        print(f"获取QQ名字失败: {e}")
+    return qq_str
+
+
+recent_sent_messages = []
+
+
+def get_qq_by_name(target_name):
+    if not target_name:
+        return None
+
+    if target_name in ["全体成员", "all", "全体"]:
+        return "all"
+
+    if target_name in name_to_qq_cache:
+        return name_to_qq_cache[target_name]
+
+    try:
+        resp = onebot("get_group_member_list", {"group_id": TARGET_GROUP_ID}, timeout=2)
+
+        if resp and resp.get("status") in ["ok", "success"]:
+            members = resp.get("data", [])
+            found_uid = None
+            for member in members:
+                uid = str(member.get("user_id", ""))
+                clean_card = clean_qq_name(member.get("card"))
+                clean_nick = clean_qq_name(member.get("nickname"))
+
+                if clean_card:
+                    name_to_qq_cache[clean_card] = uid
+                if clean_nick:
+                    name_to_qq_cache[clean_nick] = uid
+
+                if target_name == clean_card or target_name == clean_nick:
+                    found_uid = uid
+
+            return found_uid
+    except Exception as e:
+        print(f"拉取群成员列表失败: {e}")
+
+    return None
+
+
+name_to_qq_cache = LimitedDict(2000)
+
+
+def onebot(action, payload, timeout=3):
+    return requests.post(f"{ONEBOT_URL}/{action}", json=payload, timeout=timeout).json()
+
+
+def clean_qq_name(name):
+    return re.sub(r"\[.*?\]", "", filter_emoji(name or "")).strip()
+
+
+def remember_echo(text):
+    recent_sent_messages.append(re.sub(r"\s+", "", text))
+    if len(recent_sent_messages) > 50:
+        recent_sent_messages.pop(0)
+
+
+def bot_say(text):
+    remember_echo(text)
+    try:
+        onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": [{"type": "text", "data": {"text": text}}]}, timeout=5)
+        return True
+    except Exception as e:
+        print(f"机器人发送群消息失败: {e}")
+        return False

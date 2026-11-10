@@ -1,54 +1,15 @@
-import os
-import sys
-import json
-import time
-import requests
-import html
-import re
 import base64
-import io
+import datetime
 import hashlib
-import uuid
+import hmac
+import html
+import io
+import json
+import os
+import re
+import time
 import urllib.parse
-import threading
-from PIL import Image
-from collections import OrderedDict
-
-
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
-
-class LimitedDict(OrderedDict):
-    def __init__(self, max_size=1000, ttl_seconds=3600):
-        super().__init__()
-        self.max_size = max_size
-        self.ttl_seconds = ttl_seconds
-
-    def __setitem__(self, key, value):
-        super().__setitem__(key, (value, time.time()))
-        if len(self) > self.max_size:
-            self.popitem(last=False)
-
-    def __getitem__(self, key):
-        value, timestamp = super().__getitem__(key)
-        if time.time() - timestamp > self.ttl_seconds:
-            del self[key]
-            raise KeyError(key)
-        return value
-
-    def get(self, key, default=None):
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def __contains__(self, key):
-        try:
-            self[key]
-            return True
-        except KeyError:
-            return False
-
+import uuid
 
 from flask import (
     Flask,
@@ -63,267 +24,79 @@ from flask import (
     Response,
     stream_with_context,
 )
-import datetime
-from datetime import timezone, timedelta
-
-TZ_UTC8 = timezone(timedelta(hours=8))
-
-from werkzeug.middleware.proxy_fix import ProxyFix
 from flask_compress import Compress
+import requests
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+from common import (
+    KAOMOJI_LIST,
+    SECRET_KEY,
+    TARGET_GROUP_ID,
+    TZ_UTC8,
+    add_chat_message,
+    chat_collection,
+    chat_history,
+    cleanup_old_files,
+    files_collection,
+    filter_emoji,
+    get_online_count,
+    images_collection,
+    internal_file_cache,
+    online_sessions,
+    paginate,
+    recent_web_uploads,
+    save_image,
+    search_query,
+    sign_url,
+    to_jpeg_b64,
+)
+from qq import onebot, remember_echo
+from accounts import (
+    nickname,
+    get_active_account,
+    get_ip_location,
+    get_real_ip,
+    process_login_form,
+    set_nickname,
+    users_db,
+)
+from sending import send_web_message
+from webhook import receive_qq_msg
+
 
 app = Flask(__name__)
 
+
 app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
 
+
 app.config["COMPRESS_ALGORITHM"] = "gzip"
+
+
 app.config["COMPRESS_MIN_SIZE"] = 100
+
+
 app.config["COMPRESS_MIMETYPES"] = [
     "text/html",
     "application/json",
     "text/css",
     "application/javascript",
 ]
+
+
 Compress(app)
 
+
 app.permanent_session_lifetime = datetime.timedelta(days=30)
+
+
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
-import hmac
-import ipaddress
-import secrets
-import emoji
-from pymongo import MongoClient, ReturnDocument
-from werkzeug.security import check_password_hash, generate_password_hash
 
-MONGO_URI = os.environ.get("MONGO_URI", "")
-WEBHOOK_SECRET_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
-ONEBOT_URL = "http://127.0.0.1:3000"
-ACCOUNT_RE = re.compile(r"^[A-Za-z0-9_]{3,15}$")
+app.secret_key = SECRET_KEY
 
-client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-db = client["nokia_qq_db"]
-users_collection = db["users"]
-chat_collection = db["chat_history"]
-images_collection = db["images"]
-files_collection = db["files"]
-settings_collection = db["settings"]
-
-
-def load_secret_key():
-    env_key = os.environ.get("FLASK_SECRET_KEY")
-    if env_key:
-        return env_key
-    try:
-        doc = settings_collection.find_one_and_update(
-            {"_id": "flask_secret_key"},
-            {"$setOnInsert": {"value": secrets.token_hex(32)}},
-            upsert=True,
-            return_document=ReturnDocument.AFTER,
-        )
-        return doc["value"]
-    except Exception as e:
-        print(f"读取会话密钥失败，本次启动使用临时密钥(重启后需重新登录): {e}")
-        return secrets.token_hex(32)
-
-
-app.secret_key = load_secret_key()
-
-
-def load_users():
-    temp_db = {}
-    try:
-        for user in users_collection.find():
-            account = user["_id"]
-            temp_db[account] = {
-                "password": user.get("password"),
-                "nickname": user.get("nickname"),
-                "ip": user.get("ip"),
-                "status": user.get("status"),
-                "reason": user.get("reason", ""),
-                "location": user.get("location", ""),
-            }
-    except Exception as e:
-        print(f"读取云数据库失败: {e}")
-    return temp_db
-
-
-users_db = load_users()
 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
-
-def filter_emoji(text):
-    if not text:
-        return text
-
-    text = emoji.demojize(text, language="zh")
-    text = re.sub(r":([^:]+):", r"[\1]", text)
-
-    text = re.sub(r"[\U00010000-\U0010ffff\u2600-\u27BF]", "", text)
-    text = re.sub(r"[\ud800-\udfff]", "", text)
-
-    return text
-
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-
-def read_data_lines(filename):
-    with open(os.path.join(BASE_DIR, filename), encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
-
-
-def load_qq_faces():
-    with open(os.path.join(BASE_DIR, "face_config.json"), encoding="utf-8") as f:
-        faces = json.load(f).get("sysface", [])
-    return {
-        int(face["QSid"]): face["QDes"].lstrip("/")
-        for face in faces
-        if face.get("QSid") and face.get("QDes")
-    }
-
-
-QQ_FACES = load_qq_faces()
-KAOMOJI_LIST = list(
-    dict.fromkeys(
-        line.split("\t")[0] for line in read_data_lines("all_output_result_kmj.txt")
-    )
-)
-BANNED_WORDS = read_data_lines("sensitive_words.txt")
-print(f"✅ 已加载 {len(QQ_FACES)} 个 QQ 表情、{len(KAOMOJI_LIST)} 个颜文字、{len(BANNED_WORDS)} 个敏感词")
-
-
-def load_chat_history():
-    history = []
-    max_id = 0
-    try:
-        docs = list(chat_collection.find({}, {"_id": 0}).sort("id", -1).limit(50))
-        docs.reverse()
-        history = docs
-        if history:
-            max_id = history[-1]["id"]
-    except Exception as e:
-        print(f"读取云端聊天记录失败: {e}")
-    return history, max_id
-
-
-def save_chat_message(msg_dict):
-    try:
-        chat_collection.insert_one(msg_dict.copy())
-        if msg_dict["id"] > 5000:
-            chat_collection.delete_many({"id": {"$lte": msg_dict["id"] - 5000}})
-    except Exception as e:
-        print(f"写入云端聊天记录失败: {e}")
-
-
-def cleanup_old_images(max_limit=500):
-    try:
-        img_count = images_collection.count_documents({})
-        if img_count > max_limit:
-            delete_count = img_count - max_limit
-            old_images = (
-                images_collection.find({}, {"_id": 1})
-                .sort("time", 1)
-                .limit(delete_count)
-            )
-            old_ids = [img["_id"] for img in old_images]
-
-            if old_ids:
-                images_collection.delete_many({"_id": {"$in": old_ids}})
-                print(
-                    f"[自动清理] 图床超过 {max_limit} 张，已自动清理 {len(old_ids)} 张远古老图！"
-                )
-    except Exception as e:
-        print(f"图床自动清理失败: {e}")
-
-
-def to_jpeg_b64(source, max_width, max_height, quality):
-    img = Image.open(source)
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
-
-    img_io = io.BytesIO()
-    img.save(img_io, "JPEG", quality=quality)
-    return base64.b64encode(img_io.getvalue()).decode("utf-8")
-
-
-def save_image(img_id, b64_data):
-    images_collection.replace_one(
-        {"_id": img_id}, {"data": b64_data, "time": time.time()}, upsert=True
-    )
-    cleanup_old_images()
-
-
-chat_history, current_msg_id = load_chat_history()
-
-TARGET_GROUP_ID = int(os.environ.get("TARGET_GROUP_ID", "0"))
-
-qq_name_cache = LimitedDict(1000)
-
-
-def get_qq_name(group_id, qq):
-    qq_str = str(qq)
-    if qq_str in qq_name_cache:
-        return qq_name_cache[qq_str]
-    try:
-        resp = onebot("get_group_member_info", {"group_id": group_id, "user_id": int(qq)}, timeout=1.5)
-
-        if resp and resp.get("status") in ["ok", "success"]:
-            data = resp.get("data", {})
-            name = clean_qq_name(data.get("card") or data.get("nickname")) or qq_str
-
-            qq_name_cache[qq_str] = name
-            return name
-    except Exception as e:
-        print(f"获取QQ名字失败: {e}")
-    return qq_str
-
-
-recent_sent_messages = []
-
-
-def get_qq_by_name(target_name):
-    if not target_name:
-        return None
-
-    if target_name in ["全体成员", "all", "全体"]:
-        return "all"
-
-    if target_name in name_to_qq_cache:
-        return name_to_qq_cache[target_name]
-
-    try:
-        resp = onebot("get_group_member_list", {"group_id": TARGET_GROUP_ID}, timeout=2)
-
-        if resp and resp.get("status") in ["ok", "success"]:
-            members = resp.get("data", [])
-            found_uid = None
-            for member in members:
-                uid = str(member.get("user_id", ""))
-                clean_card = clean_qq_name(member.get("card"))
-                clean_nick = clean_qq_name(member.get("nickname"))
-
-                if clean_card:
-                    name_to_qq_cache[clean_card] = uid
-                if clean_nick:
-                    name_to_qq_cache[clean_nick] = uid
-
-                if target_name == clean_card or target_name == clean_nick:
-                    found_uid = uid
-
-            return found_uid
-    except Exception as e:
-        print(f"拉取群成员列表失败: {e}")
-
-    return None
-
-
-processed_notices_cache = LimitedDict(1000, 3600)
-
-APP_START_TIME = int(time.time())
-
-internal_file_cache = LimitedDict(100, 300)
-recent_web_uploads = LimitedDict(100, 300)
 
 
 @app.route("/api/internal_download/<file_id>")
@@ -343,71 +116,9 @@ def internal_download(file_id):
     )
 
 
-name_to_qq_cache = LimitedDict(2000)
-
-COOLDOWN_SECONDS = 5
-MAX_MSG_LENGTH = 80
-GLOBAL_COOLDOWN = 2
-global_last_send_time = 0
-
-ip_last_send_time = LimitedDict(1000)
-ip_location_cache = LimitedDict(1000)
-ip_last_message = LimitedDict(1000)
-
-online_sessions = {}
-ONLINE_TIMEOUT = 30
-
-
-def get_online_count():
-    current_time = time.time()
-    expired_accounts = [
-        acc
-        for acc, last_active in online_sessions.items()
-        if current_time - last_active > ONLINE_TIMEOUT
-    ]
-    for acc in expired_accounts:
-        del online_sessions[acc]
-    return len(online_sessions)
-
-
-MAX_TOTAL_ACCOUNTS = 500
-MAX_ACCOUNTS_PER_IP = 1
-MAX_PENDING_ACCOUNTS = 20
-REGISTER_COOLDOWN = 30
-MAX_REASON_LENGTH = 60
-FILES_TOTAL_LIMIT = 250 * 1024 * 1024
-last_register_time = 0
-
-MAX_LOGIN_FAILURES = 5
-login_failures = LimitedDict(1000, 300)
-
-chat_lock = threading.Lock()
-
-
 @app.context_processor
 def inject_theme():
     return {"theme": request.cookies.get("nokia_theme", "light")}
-
-
-def onebot(action, payload, timeout=3):
-    return requests.post(f"{ONEBOT_URL}/{action}", json=payload, timeout=timeout).json()
-
-
-def clean_qq_name(name):
-    return re.sub(r"\[.*?\]", "", filter_emoji(name or "")).strip()
-
-
-def paginate(total, per_page):
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    page = min(max(request.args.get("page", 1, type=int), 1), total_pages)
-    return page, total_pages, (page - 1) * per_page
-
-
-def search_query(q, *fields):
-    if not q:
-        return {}
-    pattern = {"$regex": re.escape(q), "$options": "i"}
-    return {"$or": [{field: pattern} for field in fields]}
 
 
 def upload_result(status, msg=""):
@@ -415,540 +126,10 @@ def upload_result(status, msg=""):
     return f'<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("{status}", {safe_msg});/* ]]> */</script>'
 
 
-def wml_response(raw_content, target_card=None):
-    if is_mobile_device(request):
-        resp = make_response(raw_content)
-        resp.headers["Content-Type"] = "text/vnd.wap.wml; charset=utf-8"
-    else:
-        resp = make_response(adapt_wml_to_xhtmlmp(raw_content, target_card))
-        resp.headers["Content-Type"] = "text/html; charset=utf-8"
+def wml_response(raw_content):
+    resp = make_response(raw_content)
+    resp.headers["Content-Type"] = "text/vnd.wap.wml; charset=utf-8"
     return resp
-
-
-def process_login_form():
-    account = request.form.get("account", "").strip()
-    password = request.form.get("password", "").strip()
-
-    if not account or not password:
-        return False, "账号和密码不能为空。", None
-
-    if not ACCOUNT_RE.match(account):
-        return False, "账号须为3-15位字母、数字或下划线。", None
-
-    if "register_btn" in request.form:
-        ok, msg = register_account(
-            account, password, request.form.get("reason", ""), request
-        )
-        return (False, None, msg) if ok else (False, msg, None)
-
-    error = try_login(account, password)
-    return error is None, error, None
-
-
-def has_banned_word(text):
-    clean = re.sub(r"[^\w\u4e00-\u9fa5]", "", text).lower()
-    return any(word.lower() in clean for word in BANNED_WORDS)
-
-
-def get_active_account():
-    account = session.get("nokia_account")
-    user = users_db.get(account) if account else None
-    if not user or user.get("status") == "pending":
-        return None
-    return account
-
-
-def add_chat_message(title, text, pure_sender, pure_text, **extra):
-    global current_msg_id
-    with chat_lock:
-        current_msg_id += 1
-        now = datetime.datetime.now(TZ_UTC8).strftime("%H:%M:%S")
-        new_msg = {
-            "id": current_msg_id,
-            "sender_title": f"{title} {now}",
-            "text": text,
-            "pure_sender": pure_sender,
-            "pure_text": pure_text,
-            **extra,
-        }
-        chat_history.append(new_msg)
-        if len(chat_history) > 50:
-            chat_history.pop(0)
-    save_chat_message(new_msg)
-    return new_msg
-
-
-def highlight_mentions(safe_text):
-    safe_text = re.sub(
-        r"\[@([^\]]+)\]", r'<span class="action-reply">[@\1]</span>', safe_text
-    )
-    return re.sub(
-        r"(?<![\w.-])@([\w\u4e00-\u9fa5·_-]+)",
-        r'<span class="action-reply">@\1</span>',
-        safe_text,
-    )
-
-
-def remember_echo(text):
-    recent_sent_messages.append(re.sub(r"\s+", "", text))
-    if len(recent_sent_messages) > 50:
-        recent_sent_messages.pop(0)
-
-
-def clean_nickname(raw):
-    name = re.sub(r"\[.*?\]", "", filter_emoji((raw or "").strip()))
-    name = re.sub(r"[\[\]\s]+", " ", name).strip()[:12].strip()
-    if not name:
-        return None, "昵称不能为空，也不能全是特殊字符。"
-    if has_banned_word(name):
-        return None, "昵称包含违规词。"
-    return name, None
-
-
-def set_nickname(account, raw):
-    name, error = clean_nickname(raw)
-    if error:
-        return None, error
-    users_db[account]["nickname"] = name
-    try:
-        users_collection.update_one({"_id": account}, {"$set": {"nickname": name}})
-    except Exception as e:
-        print(f"修改昵称同步云端单用户失败: {e}")
-    return name, None
-
-
-def sign_url(url):
-    return hmac.new(
-        app.secret_key.encode("utf-8"), url.encode("utf-8"), "sha256"
-    ).hexdigest()[:32]
-
-
-def try_login(account, password):
-    if login_failures.get(account, 0) >= MAX_LOGIN_FAILURES:
-        return "失败次数过多，请5分钟后再试。"
-
-    if not verify_password(account, password):
-        login_failures[account] = login_failures.get(account, 0) + 1
-        return "账号或密码错误。"
-
-    if users_db[account].get("status") == "pending":
-        return "账号正在审核中，请等待群管理员通过。"
-
-    login_failures.pop(account, None)
-    session.permanent = True
-    session["nokia_account"] = account
-    return None
-
-
-def hash_password(password):
-    return generate_password_hash(password, method="pbkdf2:sha256")
-
-
-def verify_password(account, password):
-    user = users_db.get(account)
-    if not user or not user.get("password"):
-        return False
-    return check_password_hash(user["password"], password)
-
-
-def bot_say(text):
-    remember_echo(text)
-    try:
-        onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": [{"type": "text", "data": {"text": text}}]}, timeout=5)
-        return True
-    except Exception as e:
-        print(f"机器人发送群消息失败: {e}")
-        return False
-
-
-def register_account(account, password, reason, req):
-    global last_register_time
-
-    reason = re.sub(r"\s+", " ", filter_emoji(reason or "")).strip()
-    if not reason:
-        return False, "注册需要填写申请理由。"
-    if len(reason) > MAX_REASON_LENGTH:
-        return False, f"申请理由不能超过{MAX_REASON_LENGTH}字。"
-
-    if has_banned_word(reason):
-        return False, "申请理由包含违规词。"
-
-    if len(users_db) >= MAX_TOTAL_ACCOUNTS:
-        return False, "注册名额已满，暂停注册。"
-
-    if account in users_db:
-        return False, "账号已存在，请直接登录。"
-
-    client_ip = get_real_ip(req)
-    ip_reg_count = sum(1 for u in users_db.values() if u.get("ip") == client_ip)
-    if ip_reg_count >= MAX_ACCOUNTS_PER_IP:
-        return False, "你的IP注册账号数已达上限。"
-
-    pending_count = sum(1 for u in users_db.values() if u.get("status") == "pending")
-    if pending_count >= MAX_PENDING_ACCOUNTS:
-        return False, "待审核人数过多，请稍后再试。"
-
-    if time.time() - last_register_time < REGISTER_COOLDOWN:
-        return False, "注册太频繁，请稍后再试。"
-    last_register_time = time.time()
-
-    location = get_ip_location(client_ip, req)
-    user_data = {
-        "password": hash_password(password),
-        "nickname": account,
-        "ip": client_ip,
-        "status": "pending",
-        "reason": reason,
-        "location": location,
-        "time": time.time(),
-    }
-    try:
-        users_collection.update_one({"_id": account}, {"$set": user_data}, upsert=True)
-    except Exception as e:
-        print(f"写入云数据库单用户失败: {e}")
-        return False, "服务暂时不可用，请稍后再试。"
-    users_db[account] = user_data
-
-    bot_say(
-        f"[注册申请] 账号: {account}\n"
-        f"来自: {location}\n"
-        f"理由: {reason}\n"
-        f"群主/管理员回复「通过 {account}」或「拒绝 {account}」"
-    )
-    return True, "申请已提交，请等待群管理员审核。"
-
-
-ADMIN_COMMAND_RE = re.compile(
-    r"^(通过|拒绝|删号|待审核|删文件)(?:\s+(.+))?$", flags=re.DOTALL
-)
-
-
-def is_group_manager(data):
-    sender = data.get("sender", {}) or {}
-    role = sender.get("role")
-    if not role:
-        try:
-            resp = onebot("get_group_member_info", {"group_id": TARGET_GROUP_ID, "user_id": int(sender.get("user_id", 0)), "no_cache": True}, timeout=2)
-            role = (resp.get("data") or {}).get("role")
-        except Exception as e:
-            print(f"查询群成员身份失败: {e}")
-    return role in ("owner", "admin")
-
-
-def handle_admin_command(data):
-    segments = data.get("message", [])
-    if not isinstance(segments, list) or not segments:
-        return False
-    if any(seg.get("type") != "text" for seg in segments):
-        return False
-
-    text = "".join(seg.get("data", {}).get("text", "") for seg in segments).strip()
-    match = ADMIN_COMMAND_RE.match(text)
-    if not match:
-        return False
-
-    sender_qq = str((data.get("sender", {}) or {}).get("user_id", ""))
-    bot_ids = {str(data.get("self_id", "")), os.environ.get("BOT_QQ", "")}
-    if not sender_qq or sender_qq in bot_ids:
-        return False
-
-    if not is_group_manager(data):
-        return False
-
-    command = match.group(1)
-    arg = (match.group(2) or "").strip()
-
-    if command == "待审核":
-        if arg:
-            return False
-        pending = [
-            (acc, u) for acc, u in users_db.items() if u.get("status") == "pending"
-        ]
-        if not pending:
-            bot_say("[审核] 目前没有待审核的账号。")
-        else:
-            lines = [f"[审核] 待审核 {len(pending)} 个:"]
-            for acc, u in pending[:10]:
-                lines.append(
-                    f"{acc} ({u.get('location') or '未知地域'}): {u.get('reason') or '无'}"
-                )
-            if len(pending) > 10:
-                lines.append("……其余请处理完后再查看")
-            bot_say("\n".join(lines))
-        return True
-
-    if not arg:
-        return False
-
-    if command == "删文件":
-        try:
-            result = files_collection.delete_many({"filename": arg})
-            if result.deleted_count:
-                bot_say(f"[网盘] 已删除 {result.deleted_count} 个名为 {arg} 的文件。")
-            else:
-                bot_say(f"[网盘] 找不到名为 {arg} 的文件。")
-        except Exception as e:
-            print(f"管理员删除网盘文件失败: {e}")
-            bot_say("[网盘] 删除失败，数据库暂时不可用。")
-        return True
-
-    account = arg
-    if not ACCOUNT_RE.match(account):
-        return False
-
-    user = users_db.get(account)
-    if not user:
-        bot_say(f"[审核] 找不到账号 {account}。")
-        return True
-
-    try:
-        if command == "通过":
-            if user.get("status") != "pending":
-                bot_say(f"[审核] 账号 {account} 不在待审核状态。")
-                return True
-            users_collection.update_one(
-                {"_id": account}, {"$set": {"status": "active"}}
-            )
-            user["status"] = "active"
-            bot_say(f"[审核] 账号 {account} 已通过，可以登录了。")
-        else:
-            if command == "拒绝" and user.get("status") != "pending":
-                bot_say(f"[审核] 账号 {account} 已是正式账号，如需删除请发「删号 {account}」。")
-                return True
-            users_collection.delete_one({"_id": account})
-            users_db.pop(account, None)
-            online_sessions.pop(account, None)
-            bot_say(f"[审核] 账号 {account} 已删除，名额已释放。")
-    except Exception as e:
-        print(f"管理员审批写入云数据库失败: {e}")
-        bot_say("[审核] 操作失败，数据库暂时不可用。")
-    return True
-
-
-def cleanup_old_files(max_total=FILES_TOTAL_LIMIT):
-    try:
-        total = 0
-        old_ids = []
-        for doc in files_collection.find({}, {"_id": 1, "size": 1}).sort("time", -1):
-            total += doc.get("size", 0) or 0
-            if total > max_total:
-                old_ids.append(doc["_id"])
-        if old_ids:
-            files_collection.delete_many({"_id": {"$in": old_ids}})
-            print(f"[自动清理] 网盘超过容量上限，已清理 {len(old_ids)} 个最旧的文件。")
-    except Exception as e:
-        print(f"网盘自动清理失败: {e}")
-
-
-def send_web_message(account, raw_text, req):
-    global global_last_send_time
-
-    msg_text = filter_emoji((raw_text or "").strip())
-    if not msg_text:
-        return None
-
-    username = users_db[account].get("nickname", account)
-    client_ip = get_real_ip(req)
-    current_time = time.time()
-
-    intercept_msg = None
-    if len(msg_text) > MAX_MSG_LENGTH:
-        intercept_msg = f"消息过长，最多{MAX_MSG_LENGTH}字。"
-    elif "[CQ:" in msg_text:
-        intercept_msg = "消息包含不允许的特殊字符。"
-    elif has_banned_word(msg_text):
-        intercept_msg = "消息包含违规词。"
-    elif msg_text == ip_last_message.get(client_ip, ""):
-        intercept_msg = "请勿重复发送相同内容。"
-    elif current_time - ip_last_send_time.get(client_ip, 0) < COOLDOWN_SECONDS:
-        intercept_msg = f"发送太快，请{COOLDOWN_SECONDS}秒后再试。"
-    elif current_time - global_last_send_time < GLOBAL_COOLDOWN:
-        intercept_msg = "当前发送人数过多，请稍后再试。"
-
-    if intercept_msg:
-        print(
-            f"🛡️ [安全拦截] IP:{client_ip} 账号:{account}({username}) 尝试发送: {msg_text} -> 原因: {intercept_msg}"
-        )
-        return intercept_msg
-
-    ip_last_send_time[client_ip] = current_time
-    ip_last_message[client_ip] = msg_text
-    global_last_send_time = current_time
-
-    reply_prefix_qq = ""
-    reply_prefix_web = ""
-    reply_cq_code = ""
-    clean_text = msg_text
-
-    reply_match = re.search(r"^\[回复:(\d+)\]\s*", msg_text)
-    if reply_match:
-        reply_id = int(reply_match.group(1))
-        clean_text = msg_text[reply_match.end() :]
-        target_msg = next((m for m in chat_history if m["id"] == reply_id), None)
-        if target_msg:
-            t_sender = target_msg.get("pure_sender", "某人")
-            t_text = target_msg.get("pure_text", "")
-            if len(t_text) > 15:
-                t_text = t_text[:15] + "..."
-
-            target_qq_msg_id = target_msg.get("qq_msg_id")
-            if target_qq_msg_id:
-                reply_cq_code = f"[CQ:reply,id={target_qq_msg_id}]"
-            else:
-                reply_prefix_qq = f"[回复 @{t_sender}: {t_text}]\n"
-
-            reply_prefix_web = f'<span class="reply-text">[回复 @{html.escape(t_sender)}: {html.escape(t_text)}]</span><br/>'
-
-    mention_pattern = r"\[@([^\]]+)\]|(?<![\w.-])@([\w\u4e00-\u9fa5·_-]+)"
-    mentions = {}
-    for match in re.finditer(mention_pattern, clean_text):
-        name = match.group(1) or match.group(2)
-        if name not in mentions:
-            mentions[name] = get_qq_by_name(name)
-
-    def replace_at(match):
-        qq_uid = mentions.get(match.group(1) or match.group(2))
-        return f"[CQ:at,qq={qq_uid}] " if qq_uid else match.group(0)
-
-    def replace_at_for_echo(match):
-        qq_uid = mentions.get(match.group(1) or match.group(2))
-        if not qq_uid:
-            return match.group(0)
-        if qq_uid == "all":
-            return "[@全体成员] "
-        return f"[@{get_qq_name(TARGET_GROUP_ID, qq_uid)}] "
-
-    qq_clean_text = re.sub(mention_pattern, replace_at, clean_text)
-    echo_clean_text = re.sub(mention_pattern, replace_at_for_echo, clean_text)
-
-    location = get_ip_location(client_ip, req)
-    full_message = (
-        f"{reply_cq_code}{reply_prefix_qq}[{location} - {username}] {qq_clean_text}"
-    )
-    remember_echo(f"{reply_prefix_qq}[{location} - {username}] {echo_clean_text}")
-
-    try:
-        resp = onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": full_message}, timeout=3)
-    except Exception as e:
-        print(f"发送到QQ失败: {e}")
-        return "连接 QQ 机器人失败，请稍后再试。"
-
-    qq_msg_id = None
-    if resp and resp.get("status") in ["ok", "success"]:
-        qq_msg_id = (resp.get("data") or {}).get("message_id")
-
-    safe_text = highlight_mentions(html.escape(clean_text).replace("\n", "<br/>"))
-    add_chat_message(
-        "网页",
-        f"{reply_prefix_web}[网页-{location}]{html.escape(username)}: {safe_text}",
-        username,
-        clean_text,
-        qq_msg_id=qq_msg_id,
-    )
-    return None
-
-
-def get_real_ip(req):
-    cf_custom_ip = req.headers.get("X-Real-IP-Custom")
-    if cf_custom_ip:
-        return cf_custom_ip.split(",")[0].strip()
-
-    cf_ip = req.headers.get("CF-Connecting-IP")
-    if cf_ip:
-        return cf_ip.split(",")[0].strip()
-
-    forwarded_for = req.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return req.remote_addr or "127.0.0.1"
-
-
-def get_ip_location(ip, req):
-    try:
-        if not ipaddress.ip_address(ip).is_global:
-            return "未知地域"
-    except ValueError:
-        return "未知地域"
-
-    if ip in ip_location_cache:
-        return ip_location_cache[ip]
-
-    location = ""
-    is_ipv6 = ":" in ip
-    pro, city = "", ""
-
-    if not is_ipv6:
-        try:
-            url = f"https://whois.pconline.com.cn/ipJson.jsp?ip={ip}&json=true"
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-            response = requests.get(url, headers=headers, timeout=2)
-            response.encoding = "gbk"
-            resp_data = response.json()
-
-            pro = resp_data.get("pro", "").strip()
-            city = resp_data.get("city", "").strip()
-        except Exception:
-            pass
-
-    if not pro:
-        try:
-            fallback_url = f"http://ip-api.com/json/{ip}?lang=zh-CN"
-            fallback_resp = requests.get(fallback_url, timeout=2).json()
-            if fallback_resp.get("status") == "success":
-                country = fallback_resp.get("country", "")
-                if country == "中国":
-                    pro = fallback_resp.get("regionName", "")
-                    city = fallback_resp.get("city", "")
-                else:
-                    c_city = fallback_resp.get("city", "")
-                    if c_city and c_city != country:
-                        location = f"{country}-{c_city}"
-                    else:
-                        location = country
-        except Exception:
-            pass
-
-    if pro and not location:
-        pro = (
-            pro.replace("省", "")
-            .replace("市", "")
-            .replace("自治区", "")
-            .replace("维吾尔", "")
-            .replace("回族", "")
-            .replace("壮族", "")
-        )
-        city = city.replace("市", "")
-
-        direct_cities = ["北京", "上海", "天津", "重庆"]
-        special_admin = ["香港", "澳门", "台湾"]
-        autonomous = ["内蒙古", "广西", "西藏", "宁夏", "新疆"]
-
-        if pro in direct_cities:
-            location = f"{pro}市"
-        elif pro in special_admin:
-            location = "台湾省" if pro == "台湾" else pro
-        elif pro in autonomous:
-            location = f"{pro}区{city}市" if city else f"{pro}区"
-        else:
-            location = f"{pro}省{city}市" if city else f"{pro}省"
-
-    if not location:
-        cf_country = req.headers.get("X-Real-Country")
-        cf_region = req.headers.get("X-Real-Region")
-
-        if cf_country == "CN":
-            location = f"中国-{cf_region}" if cf_region else "中国"
-        elif cf_country:
-            location = f"海外({cf_country})"
-        else:
-            location = "未知地域"
-
-    if location != "未知地域":
-        ip_location_cache[ip] = location
-
-    return location
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -1071,9 +252,8 @@ def upload_image():
         b64_data = to_jpeg_b64(file.stream, 800, 800, 80)
         cq_code = f"[CQ:image,file=base64://{b64_data}]"
 
-        username = users_db[account].get("nickname", account)
-        client_ip = get_real_ip(request)
-        location = get_ip_location(client_ip, request)
+        username = nickname(account)
+        location = get_ip_location(get_real_ip(request), request)
 
         full_message = f"[{location} - {username}]\n{cq_code}"
 
@@ -1108,9 +288,8 @@ def upload_file():
 
     try:
         filename = file.filename
-        username = users_db[account].get("nickname", account)
-        client_ip = get_real_ip(request)
-        location = get_ip_location(client_ip, request)
+        username = nickname(account)
+        location = get_ip_location(get_real_ip(request), request)
 
         recent_web_uploads[filename] = username
 
@@ -1233,99 +412,10 @@ def is_mobile_device(req):
     return any(k in ua for k in mobile_keywords)
 
 
-def adapt_wml_to_xhtmlmp(wml_str, target_card=None):
-    if target_card:
-        wml_str = re.sub(r'href="#([^"]+)"', r'href="?card=\1"', wml_str)
-        match = re.search(
-            f'<card id="{target_card}"[^>]*>.*?</card>', wml_str, flags=re.DOTALL
-        )
-        if match:
-            wml_str = re.sub(r"<card.*?</card>", "", wml_str, flags=re.DOTALL)
-            wml_str = wml_str.replace("</wml>", f"{match.group(0)}\n</wml>")
-
-    html = re.sub(
-        r"<\?xml.*?\?>",
-        '<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//WAPFORUM//DTD XHTML Mobile 1.0//EN" "http://www.wapforum.org/DTD/xhtml-mobile10.dtd">',
-        wml_str,
-    )
-    html = re.sub(r"<!DOCTYPE wml.*?>", "", html, flags=re.DOTALL)
-    html = html.replace(
-        "<wml>",
-        '<html xmlns="http://www.w3.org/1999/xhtml"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>WapChat QQ</title></head><body>',
-    )
-    html = html.replace("</wml>", "</body></html>")
-
-    def replace_card(m):
-        card_id = m.group(1)
-        title = m.group(2)
-        if card_id in ["login", "chat", "options", "rename"]:
-            return f'<div id="{card_id}">'
-        else:
-            return f'<div id="{card_id}"><h2>{title}</h2>'
-
-    html = re.sub(r'<card id="([^"]+)" title="([^"]+)">', replace_card, html)
-    html = html.replace("</card>", "</div>")
-    html = html.replace("<h2>WapChat QQ</h2>", "")
-    html = re.sub(r'emptyok="[^"]+"', "", html)
-    html = re.sub(r'format="[^"]+"', "", html)
-    html = (
-        html.replace('<p align="left">', "<div>")
-        .replace("<p>", "<div>")
-        .replace("</p>", "</div>")
-    )
-
-    if 'id="login"' in html:
-        html = html.replace(
-            "账号(字母/数字/下划线):<input", '<form action="/wml/login" method="post">账号(字母/数字/下划线):<input'
-        )
-        html = re.sub(
-            r'<anchor>\[登录\].*?name="login_btn".*?</anchor>',
-            r'<input type="submit" name="login_btn" value="登录"/>',
-            html,
-            flags=re.DOTALL,
-        )
-        html = re.sub(
-            r'<anchor>\[注册\].*?name="register_btn".*?</anchor>',
-            r'<input type="submit" name="register_btn" value="注册"/></form>',
-            html,
-            flags=re.DOTALL,
-        )
-
-    if 'id="chat"' in html:
-        html = html.replace(
-            "发言:<input",
-            '<form action="/wml/" method="post" style="display:inline;">发言:<input',
-        )
-        html = re.sub(
-            r"<anchor>\[发送\].*?</anchor>",
-            r'<input type="submit" value="发送"/></form>',
-            html,
-            flags=re.DOTALL,
-        )
-        html = re.sub(
-            r"<anchor>\[刷新\].*?</anchor>",
-            r'<form action="/wml/" method="post" style="display:inline; margin-left:4px;"><input type="hidden" name="r" value="1"/><input type="submit" value="刷新"/></form>',
-            html,
-            flags=re.DOTALL,
-        )
-
-    if 'id="rename"' in html:
-        html = html.replace(
-            "新昵称:<input",
-            '<form action="/wml/rename_wml" method="post" style="display:inline;">新昵称:<input',
-        )
-        html = re.sub(
-            r"<anchor>\[确认保存\].*?</anchor>",
-            r'<input type="submit" value="确认保存"/></form>',
-            html,
-            flags=re.DOTALL,
-        )
-
-    return html
-
-
 @app.route("/wml/login", methods=["GET", "POST"])
 def wml_login_page():
+    if not is_mobile_device(request):
+        return redirect(url_for("login_page"))
     error = success = None
     if request.method == "POST":
         logged_in, error, success = process_login_form()
@@ -1350,6 +440,8 @@ def wml_index_no_slash():
 
 @app.route("/wml/", methods=["GET", "POST"])
 def wml_index():
+    if not is_mobile_device(request):
+        return redirect(url_for("index"))
     account = get_active_account()
     if not account:
         return redirect("/wml/login")
@@ -1357,9 +449,6 @@ def wml_index():
     notice = None
     if request.method == "POST":
         notice = send_web_message(account, request.form.get("message", ""), request)
-
-        if not notice and not is_mobile_device(request):
-            return redirect("/wml/")
 
     wml_history = []
     for m in chat_history[-20:]:
@@ -1379,11 +468,11 @@ def wml_index():
     raw_content = render_template(
         "wml_chat.xml",
         history=wml_history,
-        saved_username=filter_emoji(users_db[account].get("nickname", account)),
+        saved_username=filter_emoji(nickname(account)),
         online_count=get_online_count(),
         notice=notice,
     )
-    return wml_response(raw_content, request.args.get("card", "chat"))
+    return wml_response(raw_content)
 
 
 @app.route("/wml/rename_wml", methods=["POST"])
@@ -1408,7 +497,7 @@ def index():
         "chat.html",
         history=chat_history[-25:],
         last_id=chat_history[-1]["id"] if chat_history else 0,
-        saved_username=filter_emoji(users_db[account].get("nickname", account)),
+        saved_username=filter_emoji(nickname(account)),
         online_count=get_online_count(),
     )
 
@@ -1466,392 +555,7 @@ def handle_nokia_ajax():
     )
 
 
-@app.route("/webhook", methods=["POST"])
-def receive_qq_msg():
-    client_ip = request.remote_addr or ""
-
-    if WEBHOOK_SECRET_TOKEN:
-        authorized = hmac.compare_digest(
-            request.args.get("token", "").encode("utf-8"),
-            WEBHOOK_SECRET_TOKEN.encode("utf-8"),
-        )
-    else:
-        authorized = (
-            client_ip in ("127.0.0.1", "::1")
-            and "X-Forwarded-For" not in request.headers
-        )
-
-    if not authorized:
-        print(f"[安全拦截] 拦截未授权的 Webhook 请求！来源IP: {client_ip}")
-        return jsonify({"status": "failed", "msg": "Unauthorized"}), 403
-
-    data = request.get_json(silent=True) or {}
-
-    if data.get("message_type") == "group" and data.get("group_id") == TARGET_GROUP_ID:
-        if handle_admin_command(data):
-            return jsonify({"status": "admin_command"})
-
-        sender = data.get("sender", {})
-        sender_name = clean_qq_name(sender.get("nickname", "某人")) or "某人"
-
-        sender_qq = str(sender.get("user_id", ""))
-        if sender_qq:
-            name_to_qq_cache[sender_name] = sender_qq
-
-        raw_msg = ""
-        qq_reply_html = ""
-
-        message_chain = data.get("message", [])
-        for segment in message_chain:
-            seg_type = segment.get("type")
-            if seg_type == "text":
-                raw_msg += segment.get("data", {}).get("text", "")
-            elif seg_type == "image":
-                img_url = segment.get("data", {}).get("url", "")
-                if img_url:
-                    img_id = hashlib.md5(img_url.encode("utf-8")).hexdigest()[:16]
-
-                    if not images_collection.find_one({"_id": img_id}):
-                        try:
-                            headers = {"User-Agent": "Mozilla/5.0"}
-                            resp = requests.get(img_url, headers=headers, timeout=5)
-                            if resp.status_code == 200:
-                                save_image(
-                                    img_id,
-                                    to_jpeg_b64(io.BytesIO(resp.content), 240, 100000, 70),
-                                )
-                        except Exception as e:
-                            print(f"图床持久化或清理失败: {e}")
-
-                    raw_msg += f"[图片] {{IMG:{img_id}}}"
-                else:
-                    raw_msg += "[图片]"
-            elif seg_type == "face":
-                face_data = segment.get("data", {})
-                face_text = face_data.get("text")
-                face_id = face_data.get("id")
-
-                if face_text:
-                    clean_text = face_text.replace("[", "").replace("]", "")
-                    raw_msg += f"[{clean_text}]"
-                elif face_id is not None:
-                    try:
-                        face_name = QQ_FACES.get(int(str(face_id)))
-                        if face_name:
-                            raw_msg += f"[{face_name}]"
-                        else:
-                            raw_msg += f"[表情{face_id}]"
-                    except ValueError:
-                        raw_msg += "[表情]"
-                else:
-                    raw_msg += "[表情]"
-            elif seg_type in ["bface", "mface", "marketface"]:
-                raw_msg += "[动画表情]"
-            elif seg_type == "record":
-                raw_msg += "[语音]"
-            elif seg_type == "video":
-                raw_msg += "[视频]"
-
-            elif seg_type == "json":
-                card_data_str = segment.get("data", {}).get("data", "{}")
-                prompt_text = "应用卡片"
-                try:
-                    inner_json = json.loads(card_data_str)
-                    if isinstance(inner_json, dict) and "prompt" in inner_json:
-                        prompt_text = (
-                            inner_json.get("prompt", "")
-                            .replace("[", "")
-                            .replace("]", "")
-                        )
-                except:
-                    pass
-                if not prompt_text:
-                    prompt_text = "应用卡片"
-                raw_msg += f"[{prompt_text}]"
-            elif seg_type == "xml":
-                raw_msg += "[图文卡片]"
-            elif seg_type in ["forward", "node"]:
-                raw_msg += "[聊天记录]"
-            elif seg_type == "share":
-                title = segment.get("data", {}).get("title", "链接")
-                raw_msg += f"[链接: {title}]"
-            elif seg_type == "music":
-                title = segment.get("data", {}).get("title", "一首歌")
-                raw_msg += f"[音乐: {title}]"
-            elif seg_type == "location":
-                title = segment.get("data", {}).get("title", "某个位置")
-                raw_msg += f"[位置: {title}]"
-            elif seg_type == "contact":
-                raw_msg += "[名片]"
-            elif seg_type == "poke":
-                target_qq = str(segment.get("data", {}).get("qq", ""))
-                if target_qq and target_qq != "all":
-                    target_name = get_qq_name(TARGET_GROUP_ID, target_qq)
-                    raw_msg += f"[戳了戳 {target_name}]"
-                else:
-                    raw_msg += "[戳了戳]"
-            elif seg_type == "at":
-                target_qq = str(segment.get("data", {}).get("qq", ""))
-                if target_qq == "all":
-                    raw_msg += "[@全体成员] "
-                else:
-                    target_name = segment.get("data", {}).get("name")
-                    if not target_name:
-                        target_name = get_qq_name(TARGET_GROUP_ID, target_qq)
-                    raw_msg += f"[@{target_name}] "
-            elif seg_type == "reply":
-                msg_id = segment.get("data", {}).get("id")
-                reply_text = ""
-                reply_sender = "某人"
-
-                if msg_id:
-                    try:
-                        resp = onebot("get_msg", {"message_id": msg_id}, timeout=1.5)
-                        if resp and resp.get("status") in ["ok", "success"]:
-                            orig_data = resp.get("data", {})
-
-                            orig_qq = orig_data.get("sender", {}).get("user_id")
-                            if orig_qq:
-                                reply_sender = get_qq_name(TARGET_GROUP_ID, orig_qq)
-
-                            orig_chain = orig_data.get("message", [])
-                            if isinstance(orig_chain, list):
-                                for orig_seg in orig_chain:
-                                    if orig_seg.get("type") == "text":
-                                        reply_text += orig_seg.get("data", {}).get(
-                                            "text", ""
-                                        )
-                                    elif orig_seg.get("type") == "image":
-                                        reply_text += "[图片]"
-                                    elif orig_seg.get("type") == "face":
-                                        reply_text += "[表情]"
-                            elif isinstance(orig_chain, str):
-                                reply_text = orig_chain
-
-                            reply_text = reply_text.replace("\n", " ").replace("\r", "")
-                            if len(reply_text) > 18:
-                                reply_text = reply_text[:18] + "..."
-                    except Exception as e:
-                        print(f"提取回复内容失败: {e}")
-
-                if reply_text:
-                    qq_reply_html = f'<span class="reply-text">[回复 @{html.escape(reply_sender)}: {html.escape(reply_text)}]</span><br/>'
-                else:
-                    qq_reply_html = '<span class="reply-text">[回复]</span><br/>'
-
-        raw_msg = filter_emoji(raw_msg)
-
-        raw_msg_no_space = re.sub(r"\s+", "", raw_msg)
-
-        if raw_msg.strip():
-            if raw_msg_no_space in recent_sent_messages:
-                recent_sent_messages.remove(raw_msg_no_space)
-                return jsonify({"status": "ignored_echo"})
-
-            safe_text = html.escape(raw_msg).replace("\n", "<br/>")
-
-            safe_text = re.sub(
-                r"\{IMG:([A-Za-z0-9_-]+)\}",
-                r'<a href="/view_image?b64=\1" target="_blank" class="action-at">[查看]</a>',
-                safe_text,
-            )
-            safe_text = highlight_mentions(safe_text)
-
-            safe_sender = html.escape(sender_name)
-
-            print(f"💬 [QQ群收到]: {safe_sender} - {raw_msg}")
-
-            bot_ids = {str(data.get("self_id", "")), os.environ.get("BOT_QQ", "")}
-            if sender_qq in bot_ids:
-                final_pure_sender = ""
-
-                transformed_text = re.sub(
-                    r"\[([^\]]+?)\s*-\s*([^\]]+?)\](?:\s|<br/>)*",
-                    r"[网页-\1]\2: ",
-                    safe_text,
-                    count=1,
-                )
-
-                final_display_text = f"{qq_reply_html}{transformed_text}"
-            else:
-                final_display_text = f"{qq_reply_html}{safe_sender}: {safe_text}"
-                final_pure_sender = sender_name
-
-            add_chat_message(
-                "QQ群",
-                final_display_text,
-                final_pure_sender,
-                raw_msg,
-                qq_msg_id=data.get("message_id"),
-            )
-
-    elif data.get("post_type") == "notice" and data.get("group_id") == TARGET_GROUP_ID:
-        event_time = data.get("time", int(time.time()))
-
-        if event_time <= APP_START_TIME:
-            return jsonify({"status": "ignored_historical_notice"})
-
-        if time.time() - APP_START_TIME < 90:
-            return jsonify({"status": "ignored_startup_burst"})
-
-        notice_type = data.get("notice_type")
-        user_qq = str(data.get("user_id", ""))
-
-        event_fingerprint = f"{notice_type}_{user_qq}_{event_time}"
-        if event_fingerprint in processed_notices_cache:
-            return jsonify({"status": "ignored_cached_notice"})
-        processed_notices_cache[event_fingerprint] = True
-
-        sub_type = data.get("sub_type")
-        operator_qq = str(data.get("operator_id", ""))
-
-        sys_msg_text = ""
-        recalled_qq_msg_id = None
-        recalled_local_id = None
-
-        if notice_type == "notify" and sub_type == "poke":
-            sender_name = get_qq_name(TARGET_GROUP_ID, user_qq)
-            target_qq = str(data.get("target_id", ""))
-            target_name = get_qq_name(TARGET_GROUP_ID, target_qq)
-            sys_msg_text = f"{sender_name} 戳了戳 {target_name}"
-
-        elif notice_type == "group_increase":
-            user_name = get_qq_name(TARGET_GROUP_ID, user_qq)
-            sys_msg_text = f"欢迎 {user_name} 加入了群聊！"
-        elif notice_type == "group_decrease":
-            user_name = get_qq_name(TARGET_GROUP_ID, user_qq)
-            if sub_type == "leave":
-                sys_msg_text = f"{user_name} 默默离开了群聊"
-            elif sub_type in ["kick", "kick_me"]:
-                operator_name = get_qq_name(TARGET_GROUP_ID, operator_qq)
-                sys_msg_text = f"{user_name} 被 {operator_name} 请出了群聊"
-
-        elif notice_type == "group_recall":
-            user_name = get_qq_name(TARGET_GROUP_ID, user_qq)
-            sys_msg_text = ""
-
-            recalled_qq_msg_id = data.get("message_id")
-
-            if recalled_qq_msg_id:
-                recalled_str = str(recalled_qq_msg_id)
-
-                if recalled_str not in processed_notices_cache:
-                    processed_notices_cache[recalled_str] = True
-
-                    original_msg = chat_collection.find_one(
-                        {"qq_msg_id": {"$in": [recalled_qq_msg_id, recalled_str]}}
-                    )
-
-                    if original_msg:
-                        if original_msg.get("pure_text") != "[消息已撤回]":
-                            sys_msg_text = f"{user_name} 撤回了一条消息"
-
-                            for m in chat_history:
-                                if str(m.get("qq_msg_id")) == recalled_str:
-                                    recalled_local_id = m["id"]
-                                    m["text"] = (
-                                        f'<span style="color:#999; font-size:12px;"><i>[消息已撤回]</i></span>'
-                                    )
-                                    m["pure_text"] = "[消息已撤回]"
-                                    break
-
-                            try:
-                                chat_collection.update_many(
-                                    {
-                                        "qq_msg_id": {
-                                            "$in": [recalled_qq_msg_id, recalled_str]
-                                        }
-                                    },
-                                    {
-                                        "$set": {
-                                            "text": f'<span style="color:#999; font-size:12px;"><i>[消息已撤回]</i></span>',
-                                            "pure_text": "[消息已撤回]",
-                                        }
-                                    },
-                                )
-                            except Exception as e:
-                                print(f"云端更新撤回状态失败: {e}")
-
-        elif notice_type == "group_upload":
-            user_name = get_qq_name(TARGET_GROUP_ID, user_qq)
-            file_info = data.get("file", {})
-            file_name = file_info.get("name", "未知文件")
-
-            if (
-                str(user_qq) == str(data.get("self_id"))
-                and file_name in recent_web_uploads
-            ):
-                display_name = recent_web_uploads[file_name]
-                del recent_web_uploads[file_name]
-            else:
-                display_name = user_name
-
-            sys_msg_text = f"{display_name} 上传了群文件: {file_name}"
-
-            if str(user_qq) != str(data.get("self_id")):
-                file_url = file_info.get("url", "")
-                file_id = file_info.get("id", "")
-                file_busid = file_info.get("busid", "")
-
-                if not file_url and file_id:
-                    try:
-                        resp = onebot("get_group_file_url", {"group_id": TARGET_GROUP_ID, "file_id": file_id, "busid": file_busid}, timeout=2)
-                        if resp and resp.get("status") in ["ok", "success"]:
-                            file_url = resp.get("data", {}).get("url", "")
-                    except Exception:
-                        pass
-
-                safe_sender = html.escape(display_name)
-                safe_filename = html.escape(file_name)
-
-                if file_url:
-                    encoded_url = urllib.parse.quote(file_url, safe="")
-                    encoded_name = urllib.parse.quote(file_name)
-                    proxy_url = f"/api/download_qq_file?name={encoded_name}&url={encoded_url}&sig={sign_url(file_url)}"
-                    file_html = f"<span style='color:#008800;'>[文件: {safe_filename}]</span> <a href='{proxy_url}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>"
-                else:
-                    file_html = f"<span style='color:#008800;'>[文件: {safe_filename}]</span> <span style='color:#999; font-size:11px;'>(无法获取下载链接)</span>"
-
-                add_chat_message(
-                    "QQ群",
-                    f"{safe_sender}: {file_html}",
-                    display_name,
-                    f"[文件: {file_name}]",
-                    qq_msg_id=None,
-                )
-
-        elif notice_type == "group_ban":
-            user_name = get_qq_name(TARGET_GROUP_ID, user_qq)
-            if sub_type == "ban":
-                duration = data.get("duration", 0) // 60
-                sys_msg_text = f"{user_name} 被管理员禁言了 {duration} 分钟"
-            elif sub_type == "lift_ban":
-                sys_msg_text = f"{user_name} 被解除了禁言"
-        elif notice_type == "group_admin":
-            user_name = get_qq_name(TARGET_GROUP_ID, user_qq)
-            if sub_type == "set":
-                sys_msg_text = f"{user_name} 荣升为群管理员"
-            elif sub_type == "unset":
-                sys_msg_text = f"{user_name} 被取消了管理员"
-
-        if sys_msg_text:
-            print(f"[系统事件]: {sys_msg_text}")
-
-            extra = {}
-            if notice_type == "group_recall" and recalled_local_id is not None:
-                extra["recall_target_id"] = recalled_local_id
-            if notice_type == "group_recall" and recalled_qq_msg_id:
-                extra["recalled_qq_msg_id"] = str(recalled_qq_msg_id)
-
-            add_chat_message(
-                "系统",
-                f'<span style="color:#ff6600; font-size:12px;">{html.escape(sys_msg_text)}</span>',
-                "系统",
-                sys_msg_text,
-                **extra,
-            )
-
-    return jsonify({"status": "ok"})
+app.add_url_rule("/webhook", view_func=receive_qq_msg, methods=["POST"])
 
 
 @app.route("/view_image")
@@ -1892,16 +596,9 @@ def download_web_file():
 
         if file_doc:
             filename = file_doc.get("filename", "未知文件")
-            from urllib.parse import quote
-
-            encoded_filename = quote(filename)
-
-            file_io = io.BytesIO(file_doc["data"])
-            response = make_response(
-                send_file(file_io, as_attachment=True, download_name=filename)
-            )
+            response = send_file(io.BytesIO(file_doc["data"]), as_attachment=True, download_name=filename)
             response.headers["Content-Disposition"] = (
-                f"attachment; filename*=UTF-8''{encoded_filename}"
+                f"attachment; filename*=UTF-8''{urllib.parse.quote(filename)}"
             )
             return response
         else:
