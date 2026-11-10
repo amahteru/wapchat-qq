@@ -38,7 +38,7 @@
     <card id="options" title="选项菜单">
         <p>
             <a href="#rename">改名</a><br/>
-            <a href="logout">注销</a><br/>
+            <a href="logout">退出</a><br/>
             <a href="#chat">返回聊天</a>
         </p>
     </card>

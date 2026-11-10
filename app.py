@@ -430,10 +430,10 @@ def process_login_form():
     password = request.form.get("password", "").strip()
 
     if not account or not password:
-        return False, "账号和密码不能为空！", None
+        return False, "账号和密码不能为空。", None
 
     if not ACCOUNT_RE.match(account):
-        return False, "账号只能包含3-15位字母、数字或下划线！", None
+        return False, "账号须为3-15位字母、数字或下划线。", None
 
     if "register_btn" in request.form:
         ok, msg = register_account(
@@ -499,9 +499,9 @@ def clean_nickname(raw):
     name = re.sub(r"\[.*?\]", "", filter_emoji((raw or "").strip()))
     name = re.sub(r"[\[\]\s]+", " ", name).strip()[:12].strip()
     if not name:
-        return None, "昵称不能为空或全为非法字符！"
+        return None, "昵称不能为空，也不能全是特殊字符。"
     if has_banned_word(name):
-        return None, "昵称包含违规词汇！"
+        return None, "昵称包含违规词。"
     return name, None
 
 
@@ -525,14 +525,14 @@ def sign_url(url):
 
 def try_login(account, password):
     if login_failures.get(account, 0) >= MAX_LOGIN_FAILURES:
-        return "失败次数过多，请5分钟后再试！"
+        return "失败次数过多，请5分钟后再试。"
 
     if not verify_password(account, password):
         login_failures[account] = login_failures.get(account, 0) + 1
-        return "账号或密码错误！"
+        return "账号或密码错误。"
 
     if users_db[account].get("status") == "pending":
-        return "账号正在审核中，请等待群管理员通过！"
+        return "账号正在审核中，请等待群管理员通过。"
 
     login_failures.pop(account, None)
     session.permanent = True
@@ -566,30 +566,30 @@ def register_account(account, password, reason, req):
 
     reason = re.sub(r"\s+", " ", filter_emoji(reason or "")).strip()
     if not reason:
-        return False, "注册请填写申请理由！"
+        return False, "注册需要填写申请理由。"
     if len(reason) > MAX_REASON_LENGTH:
-        return False, f"申请理由不能超过{MAX_REASON_LENGTH}字！"
+        return False, f"申请理由不能超过{MAX_REASON_LENGTH}字。"
 
     if has_banned_word(reason):
-        return False, "申请理由包含违规词汇！"
+        return False, "申请理由包含违规词。"
 
     if len(users_db) >= MAX_TOTAL_ACCOUNTS:
-        return False, "服务器名额已满，暂停注册！"
+        return False, "注册名额已满，暂停注册。"
 
     if account in users_db:
-        return False, "账号已存在，请直接登录！"
+        return False, "账号已存在，请直接登录。"
 
     client_ip = get_real_ip(req)
     ip_reg_count = sum(1 for u in users_db.values() if u.get("ip") == client_ip)
     if ip_reg_count >= MAX_ACCOUNTS_PER_IP:
-        return False, "您的IP已达到注册上限！"
+        return False, "你的IP注册账号数已达上限。"
 
     pending_count = sum(1 for u in users_db.values() if u.get("status") == "pending")
     if pending_count >= MAX_PENDING_ACCOUNTS:
-        return False, "待审核人数过多，请稍后再试！"
+        return False, "待审核人数过多，请稍后再试。"
 
     if time.time() - last_register_time < REGISTER_COOLDOWN:
-        return False, "注册过于频繁，请稍后再试！"
+        return False, "注册太频繁，请稍后再试。"
     last_register_time = time.time()
 
     location = get_ip_location(client_ip, req)
@@ -606,7 +606,7 @@ def register_account(account, password, reason, req):
         users_collection.update_one({"_id": account}, {"$set": user_data}, upsert=True)
     except Exception as e:
         print(f"写入云数据库单用户失败: {e}")
-        return False, "数据库暂时不可用，请稍后再试！"
+        return False, "服务暂时不可用，请稍后再试。"
     users_db[account] = user_data
 
     bot_say(
@@ -615,7 +615,7 @@ def register_account(account, password, reason, req):
         f"理由: {reason}\n"
         f"群主/管理员回复「通过 {account}」或「拒绝 {account}」"
     )
-    return True, "申请已提交，请等待群管理员审核！"
+    return True, "申请已提交，请等待群管理员审核。"
 
 
 ADMIN_COMMAND_RE = re.compile(
@@ -753,17 +753,17 @@ def send_web_message(account, raw_text, req):
 
     intercept_msg = None
     if len(msg_text) > MAX_MSG_LENGTH:
-        intercept_msg = f"[系统拦截]：消息过长，最多允许 {MAX_MSG_LENGTH} 个字符。"
+        intercept_msg = f"消息过长，最多{MAX_MSG_LENGTH}字。"
     elif "[CQ:" in msg_text:
-        intercept_msg = "[系统拦截]：禁止发送带有特殊控制符的代码！"
+        intercept_msg = "消息包含不允许的特殊字符。"
     elif has_banned_word(msg_text):
-        intercept_msg = "[系统拦截]：发送失败，您的消息包含违规词汇！"
+        intercept_msg = "消息包含违规词。"
     elif msg_text == ip_last_message.get(client_ip, ""):
-        intercept_msg = "[系统拦截]：请勿连续发送完全相同的内容。"
+        intercept_msg = "请勿重复发送相同内容。"
     elif current_time - ip_last_send_time.get(client_ip, 0) < COOLDOWN_SECONDS:
-        intercept_msg = f"[系统拦截]：发送太快啦，请等待 {COOLDOWN_SECONDS} 秒后再试！"
+        intercept_msg = f"发送太快，请{COOLDOWN_SECONDS}秒后再试。"
     elif current_time - global_last_send_time < GLOBAL_COOLDOWN:
-        intercept_msg = "[系统拦截]：当前网页端发送人数过多，通道拥挤，请稍后再试。"
+        intercept_msg = "当前发送人数过多，请稍后再试。"
 
     if intercept_msg:
         print(
@@ -831,7 +831,7 @@ def send_web_message(account, raw_text, req):
         resp = onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": full_message}, timeout=3)
     except Exception as e:
         print(f"发送到QQ失败: {e}")
-        return "[系统异常]：连接 QQ 机器人后端失败。"
+        return "连接 QQ 机器人失败，请稍后再试。"
 
     qq_msg_id = None
     if resp and resp.get("status") in ["ok", "success"]:
@@ -839,7 +839,7 @@ def send_web_message(account, raw_text, req):
 
     safe_text = highlight_mentions(html.escape(clean_text).replace("\n", "<br/>"))
     add_chat_message(
-        "消息",
+        "网页",
         f"{reply_prefix_web}[网页-{location}]{html.escape(username)}: {safe_text}",
         username,
         clean_text,
@@ -1061,11 +1061,11 @@ def change_name_api():
 def upload_image():
     account = get_active_account()
     if not account:
-        return upload_result("error", "权限不足或未登录")
+        return upload_result("error", "请先登录。")
 
     file = request.files.get("image")
     if not file or file.filename == "":
-        return upload_result("error", "未选择任何照片")
+        return upload_result("error", "没有选择图片。")
 
     try:
         b64_data = to_jpeg_b64(file.stream, 800, 800, 80)
@@ -1083,7 +1083,7 @@ def upload_image():
         save_image(img_id, b64_data)
 
         add_chat_message(
-            "消息",
+            "网页",
             f"[网页-{location}]{html.escape(username)}: [图片] <a href='/view_image?b64={img_id}' target='_blank' class='action-at'>[查看]</a>",
             username,
             "[图片]",
@@ -1093,18 +1093,18 @@ def upload_image():
 
     except Exception as e:
         print(f"上传图片失败: {e}")
-        return upload_result("error", "文件处理失败")
+        return upload_result("error", "图片发送失败，请稍后再试。")
 
 
 @app.route("/api/upload_file", methods=["POST"])
 def upload_file():
     account = get_active_account()
     if not account:
-        return upload_result("error", "权限不足或未登录")
+        return upload_result("error", "请先登录。")
 
     file = request.files.get("file")
     if not file or file.filename == "":
-        return upload_result("error", "未选择任何文件")
+        return upload_result("error", "没有选择文件。")
 
     try:
         filename = file.filename
@@ -1116,7 +1116,7 @@ def upload_file():
 
         file_bytes = file.read()
         if not file_bytes:
-            return upload_result("error", "不能发送空文件")
+            return upload_result("error", "不能发送空文件。")
 
         file_id = str(uuid.uuid4())
 
@@ -1136,7 +1136,7 @@ def upload_file():
         except Exception as e:
             print(f"存入网盘失败: {e}")
 
-        qq_notification_text = f"[网页-{location}]{username}: [发送了文件: {filename}]"
+        qq_notification_text = f"[网页-{location}]{username}: [文件: {filename}]"
         remember_echo(qq_notification_text)
 
         try:
@@ -1160,17 +1160,17 @@ def upload_file():
 
         safe_filename = html.escape(filename or "")
         add_chat_message(
-            "消息",
-            f"[网页-{location}]{html.escape(username)}: <span style='color:#008800;'>[发送了文件: {safe_filename}]</span> <a href='/api/download_file?id={file_id}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>",
+            "网页",
+            f"[网页-{location}]{html.escape(username)}: <span style='color:#008800;'>[文件: {safe_filename}]</span> <a href='/api/download_file?id={file_id}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>",
             username,
-            f"[发送了文件: {filename}]",
+            f"[文件: {filename}]",
         )
 
         return upload_result("ok")
 
     except Exception as e:
         print(f"上传文件失败: {e}")
-        return upload_result("error", e)
+        return upload_result("error", "文件发送失败，请稍后再试。")
 
 
 @app.route("/drive", methods=["GET"])
@@ -1276,7 +1276,7 @@ def adapt_wml_to_xhtmlmp(wml_str, target_card=None):
 
     if 'id="login"' in html:
         html = html.replace(
-            "账号:<input", '<form action="/wml/login" method="post">账号:<input'
+            "账号(字母/数字/下划线):<input", '<form action="/wml/login" method="post">账号(字母/数字/下划线):<input'
         )
         html = re.sub(
             r'<anchor>\[登录\].*?name="login_btn".*?</anchor>',
@@ -1428,7 +1428,7 @@ def handle_nokia_ajax():
                 "messages": [
                     {
                         "sender_title": "系统",
-                        "text": "登录失效或账号正在审核中，请刷新页面重新登录！",
+                        "text": "登录已失效，请重新登录。",
                     }
                 ],
                 "last_id": client_last_id,
@@ -1492,7 +1492,7 @@ def receive_qq_msg():
             return jsonify({"status": "admin_command"})
 
         sender = data.get("sender", {})
-        sender_name = clean_qq_name(sender.get("nickname", "某人")) or "无名氏"
+        sender_name = clean_qq_name(sender.get("nickname", "某人")) or "某人"
 
         sender_qq = str(sender.get("user_id", ""))
         if sender_qq:
@@ -1525,7 +1525,7 @@ def receive_qq_msg():
 
                     raw_msg += f"[图片] {{IMG:{img_id}}}"
                 else:
-                    raw_msg += "[发送了一张图片]"
+                    raw_msg += "[图片]"
             elif seg_type == "face":
                 face_data = segment.get("data", {})
                 face_text = face_data.get("text")
@@ -1548,9 +1548,9 @@ def receive_qq_msg():
             elif seg_type in ["bface", "mface", "marketface"]:
                 raw_msg += "[动画表情]"
             elif seg_type == "record":
-                raw_msg += "[发送了一条语音]"
+                raw_msg += "[语音]"
             elif seg_type == "video":
-                raw_msg += "[发送了一段视频]"
+                raw_msg += "[视频]"
 
             elif seg_type == "json":
                 card_data_str = segment.get("data", {}).get("data", "{}")
@@ -1569,20 +1569,20 @@ def receive_qq_msg():
                     prompt_text = "应用卡片"
                 raw_msg += f"[{prompt_text}]"
             elif seg_type == "xml":
-                raw_msg += "[发送了一条图文卡片]"
+                raw_msg += "[图文卡片]"
             elif seg_type in ["forward", "node"]:
-                raw_msg += "[发送了合并转发聊天记录]"
+                raw_msg += "[聊天记录]"
             elif seg_type == "share":
                 title = segment.get("data", {}).get("title", "链接")
-                raw_msg += f"[分享了链接: {title}]"
+                raw_msg += f"[链接: {title}]"
             elif seg_type == "music":
                 title = segment.get("data", {}).get("title", "一首歌")
-                raw_msg += f"[分享了音乐: {title}]"
+                raw_msg += f"[音乐: {title}]"
             elif seg_type == "location":
                 title = segment.get("data", {}).get("title", "某个位置")
-                raw_msg += f"[分享了位置: {title}]"
+                raw_msg += f"[位置: {title}]"
             elif seg_type == "contact":
-                raw_msg += "[推荐了一个联系人名片]"
+                raw_msg += "[名片]"
             elif seg_type == "poke":
                 target_qq = str(segment.get("data", {}).get("qq", ""))
                 if target_qq and target_qq != "all":
@@ -1678,7 +1678,7 @@ def receive_qq_msg():
                 final_pure_sender = sender_name
 
             add_chat_message(
-                "群聊",
+                "QQ群",
                 final_display_text,
                 final_pure_sender,
                 raw_msg,
@@ -1743,16 +1743,16 @@ def receive_qq_msg():
                     )
 
                     if original_msg:
-                        if original_msg.get("pure_text") != "[此消息已被撤回]":
+                        if original_msg.get("pure_text") != "[消息已撤回]":
                             sys_msg_text = f"{user_name} 撤回了一条消息"
 
                             for m in chat_history:
                                 if str(m.get("qq_msg_id")) == recalled_str:
                                     recalled_local_id = m["id"]
                                     m["text"] = (
-                                        f'<span style="color:#999; font-size:12px;"><i>[该消息已被 {html.escape(user_name)} 撤回]</i></span>'
+                                        f'<span style="color:#999; font-size:12px;"><i>[消息已撤回]</i></span>'
                                     )
-                                    m["pure_text"] = "[此消息已被撤回]"
+                                    m["pure_text"] = "[消息已撤回]"
                                     break
 
                             try:
@@ -1764,8 +1764,8 @@ def receive_qq_msg():
                                     },
                                     {
                                         "$set": {
-                                            "text": f'<span style="color:#999; font-size:12px;"><i>[该消息已被 {html.escape(user_name)} 撤回]</i></span>',
-                                            "pure_text": "[此消息已被撤回]",
+                                            "text": f'<span style="color:#999; font-size:12px;"><i>[消息已撤回]</i></span>',
+                                            "pure_text": "[消息已撤回]",
                                         }
                                     },
                                 )
@@ -1808,15 +1808,15 @@ def receive_qq_msg():
                     encoded_url = urllib.parse.quote(file_url, safe="")
                     encoded_name = urllib.parse.quote(file_name)
                     proxy_url = f"/api/download_qq_file?name={encoded_name}&url={encoded_url}&sig={sign_url(file_url)}"
-                    file_html = f"<span style='color:#008800;'>[发送了文件: {safe_filename}]</span> <a href='{proxy_url}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>"
+                    file_html = f"<span style='color:#008800;'>[文件: {safe_filename}]</span> <a href='{proxy_url}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>"
                 else:
-                    file_html = f"<span style='color:#008800;'>[发送了文件: {safe_filename}]</span> <span style='color:#999; font-size:11px;'>(暂无法获取下载链接)</span>"
+                    file_html = f"<span style='color:#008800;'>[文件: {safe_filename}]</span> <span style='color:#999; font-size:11px;'>(无法获取下载链接)</span>"
 
                 add_chat_message(
-                    "群聊",
+                    "QQ群",
                     f"{safe_sender}: {file_html}",
                     display_name,
-                    f"[发送了文件: {file_name}]",
+                    f"[文件: {file_name}]",
                     qq_msg_id=None,
                 )
 
@@ -1844,8 +1844,8 @@ def receive_qq_msg():
                 extra["recalled_qq_msg_id"] = str(recalled_qq_msg_id)
 
             add_chat_message(
-                "系统提示",
-                f'<span style="color:#ff6600; font-size:12px;">[通知] {html.escape(sys_msg_text)}</span>',
+                "系统",
+                f'<span style="color:#ff6600; font-size:12px;">{html.escape(sys_msg_text)}</span>',
                 "系统",
                 sys_msg_text,
                 **extra,
@@ -1858,34 +1858,34 @@ def receive_qq_msg():
 def view_image():
     account = get_active_account()
     if not account:
-        return "请先登录", 403
+        return "请先登录。", 403
 
     img_id = request.args.get("b64")
     if not img_id:
-        return "缺少图片参数", 400
+        return "图片链接无效。", 400
 
     try:
         img_doc = images_collection.find_one({"_id": img_id})
         if not img_doc:
-            return "图片已被清理或不存在", 404
+            return "图片已被清理或不存在。", 404
 
         img_bytes = base64.b64decode(img_doc["data"])
         return send_file(io.BytesIO(img_bytes), mimetype="image/jpeg")
 
     except Exception as e:
         print(f"图片处理异常: {e}")
-        return "图片格式不受支持或源图片已失效", 500
+        return "图片无法显示，可能已失效。", 500
 
 
 @app.route("/api/download_file")
 def download_web_file():
     account = get_active_account()
     if not account:
-        return "请先登录", 403
+        return "请先登录。", 403
 
     file_id = request.args.get("id")
     if not file_id:
-        return "缺少文件参数", 400
+        return "文件链接无效。", 400
 
     try:
         file_doc = files_collection.find_one({"_id": file_id})
@@ -1905,36 +1905,36 @@ def download_web_file():
             )
             return response
         else:
-            return "文件已被清理或不存在", 404
+            return "文件已被清理或不存在。", 404
 
     except Exception as e:
         print(f"文件下载异常: {e}")
-        return "文件处理异常", 500
+        return "下载失败，请稍后再试。", 500
 
 
 @app.route("/api/download_qq_file")
 def download_qq_file():
     account = get_active_account()
     if not account:
-        return "请先登录", 403
+        return "请先登录。", 403
 
     file_url = request.args.get("url")
     file_name = request.args.get("name", "未知文件")
 
     if not file_url:
-        return "缺少文件下载链接", 400
+        return "下载链接无效。", 400
 
     if not hmac.compare_digest(
         request.args.get("sig", "").encode("utf-8"), sign_url(file_url).encode("utf-8")
     ):
-        return "下载链接无效或已过期", 403
+        return "下载链接无效或已过期。", 403
 
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         req = requests.get(file_url, headers=headers, stream=True, timeout=10)
 
         if req.status_code != 200:
-            return f"下载失败，腾讯服务器返回状态码: {req.status_code}", 500
+            return "下载失败，文件可能已过期。", 500
 
         encoded_filename = urllib.parse.quote(file_name)
 
@@ -1952,7 +1952,7 @@ def download_qq_file():
         )
     except Exception as e:
         print(f"中转QQ文件下载异常: {e}")
-        return "文件处理异常或链接已失效", 500
+        return "下载失败，链接可能已失效。", 500
 
 
 if __name__ == "__main__":

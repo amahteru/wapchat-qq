@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
-{% block title %}群网盘{% endblock %}
+{% block title %}网盘{% endblock %}
 {% block css %}
 {{ ui.item_css() }}
         .item-meta { margin-top: 2px; }
@@ -12,12 +12,12 @@
 {{ ui.pager_dark_css() }}
 {% endblock %}
 {% block body %}
-{{ ui.header("群网盘") }}
-{{ ui.search_bar("/drive", q, "搜文件名或上传者...") }}
+{{ ui.header("网盘") }}
+{{ ui.search_bar("/drive", q, "搜索文件名或上传者") }}
 
     <div class="panel">
         {% if not files %}
-            <div class="item">网盘空空如也，或者没有搜到文件哦。</div>
+            <div class="item">暂无文件。</div>
         {% else %}
             {% for f in files %}
             <div class="item">

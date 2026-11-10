@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
-{% block title %}聊天历史记录{% endblock %}
+{% block title %}历史{% endblock %}
 {% block css %}
 {{ ui.msg_css() }}
 {{ ui.pager_css() }}
@@ -10,12 +10,12 @@
 {{ ui.pager_dark_css() }}
 {% endblock %}
 {% block body %}
-{{ ui.header("历史记录") }}
-{{ ui.search_bar("/history", q, "搜点什么...") }}
+{{ ui.header("历史") }}
+{{ ui.search_bar("/history", q, "搜索消息或发送者") }}
 
     <div class="panel">
         {% if not messages %}
-            <div class="msg">暂无更多历史记录...</div>
+            <div class="msg">暂无记录。</div>
         {% endif %}
 
         {% for msg in messages %}

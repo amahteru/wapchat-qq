@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}身份验证{% endblock %}
+{% block title %}登录{% endblock %}
 {% block css %}
         .content { width: 95%; margin: 3px auto; }
         .notice { color: #d00; font-size: 12px; margin: 0 0 1px 0; font-weight: bold; line-height: 1.1; }
@@ -14,14 +14,14 @@
         {% if error %}<div class="notice">{{ error }}</div>{% endif %}
         {% if success %}<div class="notice" style="color: green;">{{ success }}</div>{% endif %}
         <form method="POST" action="/login">
-            <label>登录账号(纯英数字):</label>
+            <label>账号(字母/数字/下划线):</label>
             <input type="text" name="account" required="required" spellcheck="false" autocapitalize="off" autocomplete="off" />
-            <label>终端密码:</label>
+            <label>密码:</label>
             <input type="password" name="password" required="required" />
-            <label>申请理由(仅注册时填写):</label>
+            <label>申请理由(仅注册时填):</label>
             <input type="text" name="reason" maxlength="60" autocomplete="off" />
-            <input type="submit" name="login_btn" value="登 录" />
-            <input type="submit" name="register_btn" value="注册新账号" />
+            <input type="submit" name="login_btn" value="登录" />
+            <input type="submit" name="register_btn" value="注册" />
         </form>
     </div>
 {% endblock %}

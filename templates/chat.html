@@ -46,7 +46,7 @@
         <a href="/history" style="color:#ff6600;">历史</a>
         <a href="/drive" style="color:green;">网盘</a>
         <a href="javascript:changeName(); toggleMenu('optionsMenu');" style="color:blue;">改名</a>
-        <a href="/logout" class="last" style="color:red;">注销</a>
+        <a href="/logout" class="last" style="color:red;">退出</a>
     </div>
 
     <div id="attachMenu" class="menu">
@@ -73,7 +73,7 @@
             <table style="width: 100%; table-layout: fixed;" cellspacing="0" cellpadding="0" border="0">
                 <tr>
                     <td style="width: 66%; padding-right: 2px;">
-                        <input type="text" id="userInput" placeholder="在此输入..." spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" />
+                        <input type="text" id="userInput" placeholder="输入消息" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" />
                     </td>
                     <td style="width: 10%; padding-right: 2px;">
                         <input type="button" id="attachBtn" value="▼" onclick="toggleAttachMenu();" />
@@ -102,7 +102,7 @@
             <div style="clear:both;">{{ msg.text | safe }}</div>
         </div>
         {% endfor %}
-        <div class="msg"><b>系统:</b><br/>连接就绪，正在监听 QQ 群消息...</div>
+        <div class="msg"><b>系统:</b><br/>已连接，正在接收群消息。</div>
     </div>
 
     <script type="text/javascript">
@@ -112,7 +112,7 @@
                 try { return new ActiveXObject("Msxml2.XMLHTTP.6.0"); } catch (e) {}
                 try { return new ActiveXObject("Msxml2.XMLHTTP.3.0"); } catch (e) {}
                 try { return new ActiveXObject("Microsoft.XMLHTTP"); } catch (e) {}
-                throw new Error("此浏览器不支持 AJAX");
+                throw new Error("浏览器不支持，无法收发消息");
             };
         }
         if (!window.JSON) {
@@ -224,7 +224,7 @@
             if (!form.getElementsByTagName('input')[0].value) return;
             form.submit();
             toggleAttachMenu();
-            addMessage('系统', typeName + '正在后台发送中，请稍候...');
+            addMessage('系统', typeName + '正在发送，请稍候。');
         }
         function uploadCallback(status, msg) {
             attachMenu.style.display = 'none';
@@ -232,30 +232,30 @@
             document.getElementById('uploadFileForm').getElementsByTagName('input')[0].value = '';
 
             if (status === 'ok') {
-                addMessage('系统', '发送成功！');
+                addMessage('系统', '发送成功。');
                 if (pollTimer) clearTimeout(pollTimer);
                 currentInterval = baseInterval;
                 doPoll();
             } else {
-                addMessage('系统', '发送失败: ' + msg);
+                addMessage('系统', '发送失败：' + msg);
             }
         }
         function changeName() {
-            var newName = prompt("请输入您的新昵称：\n(此操作不会更改您的登录账号)", myUsername);
+            var newName = prompt("输入新昵称（不会改变登录账号）：", myUsername);
             if (newName === null) return;
             newName = newName.replace(/^\s+|\s+$/g, '');
             if (newName === '') {
-                addMessage('系统', '昵称不能为空，取消修改。');
+                addMessage('系统', '昵称不能为空，已取消修改。');
                 return;
             }
             postJSON('/api/change_name', { new_name: newName }, function (status, res) {
                 if (!res) {
-                    addMessage('系统', '网络请求失败，请稍后重试');
+                    addMessage('系统', '网络出错，请稍后重试。');
                 } else if (res.status === 'ok') {
                     myUsername = res.new_name;
-                    addMessage('系统', '昵称已成功更改为: ' + myUsername);
+                    addMessage('系统', '昵称已改为：' + myUsername);
                 } else {
-                    addMessage('系统', '改名失败: ' + res.msg);
+                    addMessage('系统', '改名失败：' + res.msg);
                 }
             });
         }
@@ -299,7 +299,7 @@
                 if (m.recall_target_id !== undefined && m.recall_target_id !== null) {
                     var targetDiv = document.getElementById('msg_' + m.recall_target_id);
                     if (targetDiv) {
-                        targetDiv.innerHTML = '<div style="color:#999; font-size:12px; margin-bottom:2px;"><i>[该消息已被撤回]</i></div>';
+                        targetDiv.innerHTML = '<div style="color:#999; font-size:12px; margin-bottom:2px;"><i>[消息已撤回]</i></div>';
                     }
                 }
                 if (m.id === undefined || m.id > lastMsgId) {
@@ -333,9 +333,9 @@
                 sendBtn.disabled = false;
                 sendBtn.value = '发送';
                 if (status !== 200) {
-                    addMessage('系统', '网络请求失败，状态码: ' + status);
+                    addMessage('系统', '网络出错，请稍后重试。');
                 } else if (!res) {
-                    addMessage('系统', '解析数据失败');
+                    addMessage('系统', '数据异常，请刷新页面。');
                 } else {
                     applySync(res);
                 }

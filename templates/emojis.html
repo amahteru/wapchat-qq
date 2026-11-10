@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
-{% block title %}选择颜文字{% endblock %}
+{% block title %}颜文字{% endblock %}
 {% block css %}
         .kmj-btn { display: inline-block; padding: 3px 5px; margin: 3px; border: 1px solid #999; background: #eee; text-decoration: none; color: #000; font-size: 12px; line-height: 1.2; }
         .kmj-btn:active { background: #ccc; }
@@ -12,7 +12,7 @@
 {{ ui.pager_dark_css() }}
 {% endblock %}
 {% block body %}
-{{ ui.header("颜文字 (" ~ page ~ "/" ~ total_pages ~ ")", "取消返回") }}
+{{ ui.header("颜文字 (" ~ page ~ "/" ~ total_pages ~ ")") }}
 
     <div class="panel" style="text-align: center;">
         {% for kmj in emojis %}
