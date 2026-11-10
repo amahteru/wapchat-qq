@@ -274,7 +274,7 @@ def status_report():
         counts[u["status"]] += 1
     uptime = int(time.time()) - APP_START_TIME
     lines = [
-        "[状态]",
+        "[状态] 运行情况:",
         f"账号: 正式{counts['active']}，待审核{counts['pending']}，封禁{counts['banned']}",
         f"在线: {get_online_count()}人，已运行{uptime // 3600}小时{uptime % 3600 // 60}分",
     ]

@@ -292,8 +292,6 @@ def upload_file():
         except Exception as e:
             print(f"存入网盘失败: {e}")
 
-        send_group([text_seg(f"[{location} - {username}] [文件: {filename}]")], timeout=3)
-
         resp_data = onebot(
             "upload_group_file",
             {"group_id": TARGET_GROUP_ID, "file": "base64://" + base64.b64encode(file_bytes).decode(), "name": filename},
@@ -302,11 +300,14 @@ def upload_file():
         if resp_data.get("status") != "ok":
             raise RuntimeError(resp_data.get("wording") or resp_data.get("message") or "机器人返回失败")
 
+        qq_msg_id = send_group([text_seg(f"[{location} - {username}] [文件: {filename}]")], timeout=3)
+
         add_chat_message(
             "网页",
             f"[网页-{html.escape(location)}]{html.escape(username)}: <span style='color:#008800;'>[文件: {html.escape(filename)}]</span> <a href='/api/download_file?id={file_id}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>",
             username,
             f"[文件: {filename}]",
+            qq_msg_id=qq_msg_id,
         )
 
         return upload_result("ok")
