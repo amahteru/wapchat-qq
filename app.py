@@ -578,27 +578,10 @@ def hash_password(password):
 
 
 def verify_password(account, password):
-    """校验密码。旧版本明文存储的密码在首次登录成功后自动升级为哈希。"""
     user = users_db.get(account)
-    if not user:
+    if not user or not user.get("password"):
         return False
-    stored = user.get("password") or ""
-
-    if stored.startswith("pbkdf2:"):
-        return check_password_hash(stored, password)
-
-    if not stored or not hmac.compare_digest(
-        stored.encode("utf-8"), password.encode("utf-8")
-    ):
-        return False
-
-    new_hash = hash_password(password)
-    user["password"] = new_hash
-    try:
-        users_collection.update_one({"_id": account}, {"$set": {"password": new_hash}})
-    except Exception as e:
-        print(f"升级密码哈希失败: {e}")
-    return True
+    return check_password_hash(user["password"], password)
 
 
 def bot_say(text):
@@ -1241,8 +1224,7 @@ def view_drive():
     per_page = 20
     q = request.args.get("q", "").strip()
 
-    # 旧版本存在 R2 上的文件(只有 r2_key 没有 data)已无法读取，不再列出
-    query = {"data": {"$exists": True}, **search_query(q, "filename", "uploader")}
+    query = search_query(q, "filename", "uploader")
     page, total_pages, skip = paginate(files_collection.count_documents(query), per_page)
 
     display_files = []
@@ -1963,18 +1945,14 @@ def download_web_file():
 
             encoded_filename = quote(filename)
 
-            if "data" in file_doc:
-                file_bytes = file_doc["data"]
-                file_io = io.BytesIO(file_bytes)
-                response = make_response(
-                    send_file(file_io, as_attachment=True, download_name=filename)
-                )
-                response.headers["Content-Disposition"] = (
-                    f"attachment; filename*=UTF-8''{encoded_filename}"
-                )
-                return response
-            else:
-                return "该文件存于旧版网盘，已无法下载", 410
+            file_io = io.BytesIO(file_doc["data"])
+            response = make_response(
+                send_file(file_io, as_attachment=True, download_name=filename)
+            )
+            response.headers["Content-Disposition"] = (
+                f"attachment; filename*=UTF-8''{encoded_filename}"
+            )
+            return response
         else:
             return "文件已被清理或不存在", 404
 
