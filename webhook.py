@@ -269,7 +269,6 @@ def receive_qq_msg():
         operator_qq = str(data.get("operator_id", ""))
 
         sys_msg_text = ""
-        recalled_qq_msg_id = None
         recalled_local_id = None
 
         if notice_type == "notify" and sub_type == "poke":
@@ -290,17 +289,16 @@ def receive_qq_msg():
                 sys_msg_text = f"{user_name} 被 {operator_name} 请出了群聊"
 
         elif notice_type == "group_recall":
-            recalled_qq_msg_id = data.get("message_id")
-            recalled_str = str(recalled_qq_msg_id or "")
-            id_filter = {"qq_msg_id": {"$in": [recalled_qq_msg_id, recalled_str]}}
+            recalled_qq_msg_id = data["message_id"]
+            id_filter = {"qq_msg_id": recalled_qq_msg_id}
 
-            original_msg = chat_collection.find_one(id_filter) if recalled_qq_msg_id else None
-            if original_msg and original_msg.get("pure_text") != RECALLED_TEXT:
-                operator_name = get_qq_name(operator_qq or user_qq)
+            original_msg = chat_collection.find_one(id_filter)
+            if original_msg and original_msg["pure_text"] != RECALLED_TEXT:
+                operator_name = get_qq_name(operator_qq)
                 sys_msg_text = f"{operator_name} 撤回了一条消息"
 
                 for m in chat_history:
-                    if str(m.get("qq_msg_id")) == recalled_str:
+                    if m.get("qq_msg_id") == recalled_qq_msg_id:
                         recalled_local_id = m["id"]
                         m["text"] = RECALLED_HTML
                         m["pure_text"] = RECALLED_TEXT
@@ -381,8 +379,6 @@ def receive_qq_msg():
             extra = {}
             if notice_type == "group_recall" and recalled_local_id is not None:
                 extra["recall_target_id"] = recalled_local_id
-            if notice_type == "group_recall" and recalled_qq_msg_id:
-                extra["recalled_qq_msg_id"] = str(recalled_qq_msg_id)
 
             add_chat_message(
                 "系统",

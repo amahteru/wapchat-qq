@@ -307,7 +307,7 @@ def cleanup_old_files(max_total=FILES_TOTAL_LIMIT):
         total = 0
         old_ids = []
         for doc in files_collection.find({}, {"_id": 1, "size": 1}).sort("time", -1):
-            total += doc.get("size", 0) or 0
+            total += doc["size"]
             if total > max_total:
                 old_ids.append(doc["_id"])
         if old_ids:

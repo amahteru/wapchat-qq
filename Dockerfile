@@ -11,8 +11,13 @@ RUN curl -fsSL -o napcat.sh https://raw.githubusercontent.com/NapNeko/NapCat-Ins
     && bash napcat.sh --docker n --cli y --proxy 0 --confirm \
     && rm napcat.sh
 
+RUN mkdir -p data && for f in ip2region_v4.xdb ip2region_v6.xdb; do \
+        curl -fsSL -o data/$f https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/$f; \
+    done
+
 COPY *.py ./
 COPY face_config.json .
+COPY country_zh.json .
 COPY all_output_result_kmj.txt .
 COPY sensitive_words.txt .
 COPY templates ./templates

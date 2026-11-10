@@ -5,4 +5,5 @@ pymongo[srv]==4.19.0
 Pillow==13.0.0
 emoji==2.16.0
 Flask-Compress==1.26
+py-ip2region
 gunicorn==27.0.0

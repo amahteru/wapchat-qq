@@ -10,7 +10,8 @@ from common import (
     has_banned_word,
 )
 from qq import get_qq_by_name, get_qq_name, remember_echo, send_group, text_seg
-from accounts import get_ip_location, get_real_ip, nickname
+from accounts import get_real_ip, nickname
+from location import get_ip_location
 
 
 COOLDOWN_SECONDS = 5
@@ -89,8 +90,8 @@ def send_web_message(account, raw_text, req):
         clean_text = msg_text[reply_match.end() :]
         target_msg = next((m for m in chat_history if m["id"] == reply_id), None)
         if target_msg:
-            t_sender = target_msg.get("pure_sender", "某人")
-            t_text = target_msg.get("pure_text", "")
+            t_sender = target_msg["pure_sender"]
+            t_text = target_msg["pure_text"]
             if len(t_text) > 15:
                 t_text = t_text[:15] + "..."
 
@@ -102,7 +103,7 @@ def send_web_message(account, raw_text, req):
 
             reply_prefix_web = f'<span class="reply-text">[回复 @{html.escape(t_sender)}: {html.escape(t_text)}]</span><br/>'
 
-    location = get_ip_location(client_ip, req)
+    location = get_ip_location(client_ip)
     header = f"{reply_prefix_qq}[{location} - {username}] "
     segments = reply_segments + [text_seg(header)]
     echo_text = header

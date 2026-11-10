@@ -50,10 +50,10 @@ from common import (
     to_jpeg_b64,
 )
 from qq import onebot, remember_echo, send_group, text_seg
+from location import get_ip_location
 from accounts import (
     nickname,
     get_active_account,
-    get_ip_location,
     get_real_ip,
     process_login_form,
     set_nickname,
@@ -250,7 +250,7 @@ def upload_image():
         b64_data = to_jpeg_b64(file.stream, 800, 800, 80)
 
         username = nickname(account)
-        location = get_ip_location(get_real_ip(request), request)
+        location = get_ip_location(get_real_ip(request))
 
         caption = f"[{location} - {username}]\n"
         qq_msg_id = send_group(
@@ -289,7 +289,7 @@ def upload_file():
     try:
         filename = file.filename
         username = nickname(account)
-        location = get_ip_location(get_real_ip(request), request)
+        location = get_ip_location(get_real_ip(request))
 
         recent_web_uploads[filename] = username
 
@@ -367,14 +367,13 @@ def view_drive():
     for f in (
         files_collection.find(query, {"data": 0}).sort("time", -1).skip(skip).limit(per_page)
     ):
-        size_bytes = f.get("size", 0)
-        dt = datetime.datetime.fromtimestamp(f.get("time", 0), tz=TZ_UTC8)
+        dt = datetime.datetime.fromtimestamp(f["time"], tz=TZ_UTC8)
         display_files.append(
             {
                 "_id": f["_id"],
-                "filename": f.get("filename", "未知文件"),
-                "uploader": f.get("uploader", "系统"),
-                "size_mb": round(size_bytes / (1024 * 1024), 2) if size_bytes else "未知",
+                "filename": f["filename"],
+                "uploader": f["uploader"],
+                "size_mb": round(f["size"] / (1024 * 1024), 2),
                 "upload_time": dt.strftime("%Y-%m-%d %H:%M"),
             }
         )
@@ -456,7 +455,7 @@ def wml_index():
         clean_text = re.sub(
             r'<a href=([\'"])([^\'"]+)\1[^>]*>(.*?)</a>',
             r'<a href="\2">\3</a>',
-            m.get("text", ""),
+            m["text"],
         )
         wml_msg["wml_text"] = re.sub(r"</?span[^>]*>", "", clean_text)
         wml_history.append(wml_msg)
@@ -537,11 +536,11 @@ def handle_nokia_ajax():
             continue
         msg_dict = {
             "id": m["id"],
-            "sender_title": m.get("sender_title", "QQ群"),
+            "sender_title": m["sender_title"],
             "text": m["text"],
-            "pure_sender": m.get("pure_sender", ""),
+            "pure_sender": m["pure_sender"],
         }
-        if m.get("recall_target_id") is not None:
+        if "recall_target_id" in m:
             msg_dict["recall_target_id"] = m["recall_target_id"]
 
         response_msgs.append(msg_dict)
@@ -596,7 +595,7 @@ def download_web_file():
         file_doc = files_collection.find_one({"_id": file_id})
 
         if file_doc:
-            filename = file_doc.get("filename", "未知文件")
+            filename = file_doc["filename"]
             response = send_file(io.BytesIO(file_doc["data"]), as_attachment=True, download_name=filename)
             response.headers["Content-Disposition"] = (
                 f"attachment; filename*=UTF-8''{urllib.parse.quote(filename)}"

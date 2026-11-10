@@ -19,7 +19,7 @@
         {% endif %}
 
         {% for msg in messages %}
-        <div class="msg"><b>{{ msg.get('sender_title', 'QQ群') }}</b><br/>{{ msg.text | safe }}</div>
+        <div class="msg"><b>{{ msg.sender_title }}</b><br/>{{ msg.text | safe }}</div>
         {% endfor %}
     </div>
 

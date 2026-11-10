@@ -90,7 +90,7 @@
         {% for msg in history|reverse %}
         <div class="msg" id="msg_{{ msg.id }}">
             <div style="overflow:hidden; margin-bottom:2px;">
-                <b style="float:left;">{{ msg.get('sender_title', 'QQ群') }}:</b>
+                <b style="float:left;">{{ msg.sender_title }}:</b>
                 {% if msg.pure_sender %}
                 {% set safe_name = msg.pure_sender | replace("'", "") | replace('"', '') %}
                 <span style="float:right;">

@@ -28,15 +28,16 @@
 ├── app.py                    # 入口：Flask 应用配置与全部网页路由
 ├── common.py                 # 公共部分：数据库、聊天记录、图片、敏感词等
 ├── qq.py                     # 与 NapCat 机器人通信、查询群成员昵称
-├── accounts.py               # 登录注册、昵称、IP 定位、群内审批指令
+├── accounts.py               # 登录注册、昵称、群内审批指令
+├── location.py               # IP 属地 (离线库 ip2region，只显示到省/国家)
 ├── sending.py                # 网页用户发言：拦截检查并转发到 QQ 群
 ├── webhook.py                # 接收 QQ 群消息与通知并转写成网页消息
 ├── templates/                # 页面模板 (base.html 为公共骨架，_macros.html 为共用片段)
 ├── Dockerfile                # 容器构建配置 (自动配置环境与 NapCatQQ 机器人)
 ├── start.sh                  # 容器启动脚本 (生成机器人配置并启动服务)
 ├── requirements.txt          # Python 依赖清单
-├── tests/                    # 自动化测试 (模拟数据库和机器人，不需要联网)
 ├── face_config.json          # 原生 QQ 小黄脸表情映射库
+├── country_zh.json           # 国家代码到中文国名的对照表 (来自 Unicode CLDR)
 ├── all_output_result_kmj.txt # 颜文字符号库
 ├── sensitive_words.txt       # 违禁词/敏感词拦截库
 ├── LICENSE                   # 开源协议
@@ -83,17 +84,13 @@ QQ 机器人比较吃内存，建议给容器至少 1GB 内存。会自动休眠
 
 老手机不支持现代 HTTPS，需要在前面加一层 [cf-legacy-proxy](https://github.com/amahteru/cf-legacy-proxy) 这类 HTTP 反代，把 `TARGET_DOMAIN` 设为本站的域名。本站按反代传来的请求头识别访客：
 
-- **访客 IP**：取 `X-Forwarded-For` 的第一个地址 (反代会把它设为访客真实 IP)，用于注册 IP 限制和发言频率限制。
-- **地域兜底**：IP 归属地查询失败时，使用反代传来的 `X-Real-Country` / `X-Real-Region`。
+- **访客 IP**：取 `X-Forwarded-For` 的第一个地址 (反代会把它设为访客真实 IP)，用于 IP 属地、注册 IP 限制和发言频率限制。
 
-## 测试
+### IP 属地
 
-测试会用内存数据库和假机器人跑一遍注册、审批、收发消息、上传、撤回和群指令，不需要联网或真实 QQ：
+用户的 IP 属地用离线库 [ip2region](https://github.com/lionsoul2014/ip2region) 查询，每次构建镜像时自动下载最新数据，运行时不依赖任何在线接口。和主流平台的 IP 属地一样，国内只显示到省 (如 `江苏`、`广西`、`香港`)，国外只显示国家 (如 `美国`)，内网地址显示 `未知地域`。
 
-```bash
-pip install -r requirements.txt -r tests/requirements.txt
-python -m pytest tests
-```
+不用 Docker 直接运行时，需要把 `ip2region_v4.xdb` 和 `ip2region_v6.xdb` 下载到项目的 `data/` 目录。
 
 ## 使用
 

@@ -1,11 +1,9 @@
-import ipaddress
 import os
 import re
 import secrets
 import time
 
 from flask import request, session
-import requests
 from pymongo.errors import DuplicateKeyError
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -18,6 +16,7 @@ from common import (
     online_sessions,
     users_collection,
 )
+from location import get_ip_location
 from qq import bot_say, onebot
 
 
@@ -25,23 +24,10 @@ ACCOUNT_RE = re.compile(r"^[A-Za-z0-9_]{3,15}$")
 
 
 def load_users():
-    return {
-        user["_id"]: {
-            "password": user.get("password"),
-            "nickname": user.get("nickname"),
-            "ip": user.get("ip"),
-            "status": user.get("status"),
-            "reason": user.get("reason", ""),
-            "location": user.get("location", ""),
-        }
-        for user in users_collection.find()
-    }
+    return {user.pop("_id"): user for user in users_collection.find()}
 
 
 users_db = load_users()
-
-
-ip_location_cache = LimitedDict(1000)
 
 
 MAX_TOTAL_ACCOUNTS = 500
@@ -180,7 +166,7 @@ def register_account(account, password, reason, req):
         return False, "注册太频繁，请稍后再试。"
     last_register_time = time.time()
 
-    location = get_ip_location(client_ip, req)
+    location = get_ip_location(client_ip)
     user_data = {
         "password": hash_password(password),
         "nickname": account,
@@ -287,8 +273,7 @@ def status_report():
 
     counts = {"active": 0, "pending": 0, "banned": 0}
     for u in users_db.values():
-        status = u.get("status")
-        counts[status if status in counts else "active"] += 1
+        counts[u["status"]] += 1
     uptime = int(time.time()) - APP_START_TIME
     lines = [
         "[状态]",
@@ -296,7 +281,7 @@ def status_report():
         f"在线: {get_online_count()} 人，已运行 {uptime // 3600} 小时 {uptime % 3600 // 60} 分",
     ]
     try:
-        files_size = sum(d.get("size", 0) or 0 for d in files_collection.find({}, {"size": 1}))
+        files_size = sum(d["size"] for d in files_collection.find({}, {"size": 1}))
         lines.append(
             f"聊天记录 {chat_collection.estimated_document_count()} 条，"
             f"图片 {images_collection.estimated_document_count()} 张，"
@@ -432,93 +417,9 @@ def handle_admin_command(data):
 
 
 def nickname(account):
-    return users_db[account].get("nickname", account)
+    return users_db[account]["nickname"]
 
 
 def get_real_ip(req):
     forwarded = req.headers.get("X-Forwarded-For", "").split(",")[0].strip()
     return forwarded or req.remote_addr or ""
-
-
-def get_ip_location(ip, req):
-    try:
-        if not ipaddress.ip_address(ip).is_global:
-            return "未知地域"
-    except ValueError:
-        return "未知地域"
-
-    if ip in ip_location_cache:
-        return ip_location_cache[ip]
-
-    location = ""
-    is_ipv6 = ":" in ip
-    pro, city = "", ""
-
-    if not is_ipv6:
-        try:
-            url = f"https://whois.pconline.com.cn/ipJson.jsp?ip={ip}&json=true"
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-            response = requests.get(url, headers=headers, timeout=2)
-            response.encoding = "gbk"
-            resp_data = response.json()
-
-            pro = resp_data.get("pro", "").strip()
-            city = resp_data.get("city", "").strip()
-        except Exception:
-            pass
-
-    if not pro:
-        try:
-            fallback_url = f"http://ip-api.com/json/{ip}?lang=zh-CN"
-            fallback_resp = requests.get(fallback_url, timeout=2).json()
-            if fallback_resp.get("status") == "success":
-                country = fallback_resp.get("country", "")
-                if country == "中国":
-                    pro = fallback_resp.get("regionName", "")
-                    city = fallback_resp.get("city", "")
-                else:
-                    c_city = fallback_resp.get("city", "")
-                    if c_city and c_city != country:
-                        location = f"{country}-{c_city}"
-                    else:
-                        location = country
-        except Exception:
-            pass
-
-    if pro and not location:
-        pro = (
-            pro.replace("省", "")
-            .replace("市", "")
-            .replace("自治区", "")
-            .replace("维吾尔", "")
-            .replace("回族", "")
-            .replace("壮族", "")
-        )
-        city = city.replace("市", "")
-
-        direct_cities = ["北京", "上海", "天津", "重庆"]
-        special_admin = ["香港", "澳门", "台湾"]
-        autonomous = ["内蒙古", "广西", "西藏", "宁夏", "新疆"]
-
-        if pro in direct_cities:
-            location = f"{pro}市"
-        elif pro in special_admin:
-            location = "台湾省" if pro == "台湾" else pro
-        elif pro in autonomous:
-            location = f"{pro}区{city}市" if city else f"{pro}区"
-        else:
-            location = f"{pro}省{city}市" if city else f"{pro}省"
-
-    if not location:
-        country = req.headers.get("X-Real-Country", "")
-        region = re.sub(r"[^A-Za-z .-]", "", req.headers.get("X-Real-Region", ""))[:30].strip()
-        if country == "CN":
-            return f"中国-{region}" if region else "中国"
-        if re.fullmatch(r"[A-Z]{2}", country):
-            return f"海外({country})"
-        return "未知地域"
-
-    ip_location_cache[ip] = location
-    return location

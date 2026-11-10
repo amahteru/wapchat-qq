@@ -29,7 +29,7 @@
             --------<br/>
             {% if not history %}暂无消息<br/>{% endif %}
             {% for msg in history %}
-                <b>{{ msg.get('sender_title', 'QQ群') }}</b><br/>
+                <b>{{ msg.sender_title }}</b><br/>
                 {{ msg.wml_text | safe }}<br/>
             {% endfor %}
         </p>
