@@ -26,7 +26,6 @@ from flask import (
 )
 from flask_compress import Compress
 import requests
-from werkzeug.middleware.proxy_fix import ProxyFix
 
 from common import (
     KAOMOJI_LIST,
@@ -50,7 +49,7 @@ from common import (
     sign_url,
     to_jpeg_b64,
 )
-from qq import onebot, remember_echo
+from qq import onebot, remember_echo, send_group, text_seg
 from accounts import (
     nickname,
     get_active_account,
@@ -96,13 +95,9 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.secret_key = SECRET_KEY
 
 
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
-
-
 @app.route("/api/internal_download/<file_id>")
 def internal_download(file_id):
-    client_ip = request.remote_addr or "127.0.0.1"
-    if client_ip != "127.0.0.1":
+    if request.remote_addr != "127.0.0.1":
         return "Forbidden", 403
 
     file_data = internal_file_cache.get(file_id)
@@ -185,7 +180,7 @@ def view_online_users():
             "nickname": filter_emoji(users_db.get(acc, {}).get("nickname", acc)),
             "is_me": acc == account,
         }
-        for acc in online_sessions
+        for acc in list(online_sessions)
     ]
     active_users.sort(key=lambda x: (not x["is_me"], x["account"]))
 
@@ -218,7 +213,10 @@ def toggle_theme():
     current_theme = request.cookies.get("nokia_theme", "light")
     new_theme = "dark" if current_theme == "light" else "light"
 
-    next_url = request.referrer or url_for("index")
+    referrer = urllib.parse.urlsplit(request.referrer or "")
+    next_url = url_for("index")
+    if referrer.netloc == request.host and referrer.path.startswith("/"):
+        next_url = referrer.path + (f"?{referrer.query}" if referrer.query else "")
 
     resp = make_response(redirect(next_url))
     resp.set_cookie("nokia_theme", new_theme, max_age=31536000)
@@ -227,8 +225,8 @@ def toggle_theme():
 
 @app.route("/api/change_name", methods=["POST"])
 def change_name_api():
-    account = session.get("nokia_account")
-    if not account or account not in users_db:
+    account = get_active_account()
+    if not account:
         return jsonify({"status": "error", "msg": "登录已失效，请重新登录。"})
 
     data = request.get_json(silent=True) or {}
@@ -250,23 +248,25 @@ def upload_image():
 
     try:
         b64_data = to_jpeg_b64(file.stream, 800, 800, 80)
-        cq_code = f"[CQ:image,file=base64://{b64_data}]"
 
         username = nickname(account)
         location = get_ip_location(get_real_ip(request), request)
 
-        full_message = f"[{location} - {username}]\n{cq_code}"
-
-        onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": full_message}, timeout=8)
+        caption = f"[{location} - {username}]\n"
+        qq_msg_id = send_group(
+            [text_seg(caption), {"type": "image", "data": {"file": f"base64://{b64_data}"}}],
+            timeout=8,
+        )
 
         img_id = hashlib.md5(b64_data.encode("utf-8")).hexdigest()[:16]
         save_image(img_id, b64_data)
 
         add_chat_message(
             "网页",
-            f"[网页-{location}]{html.escape(username)}: [图片] <a href='/view_image?b64={img_id}' target='_blank' class='action-at'>[查看]</a>",
+            f"[网页-{html.escape(location)}]{html.escape(username)}: [图片] <a href='/view_image?b64={img_id}' target='_blank' class='action-at'>[查看]</a>",
             username,
             "[图片]",
+            qq_msg_id=qq_msg_id,
         )
 
         return upload_result("ok")
@@ -319,7 +319,7 @@ def upload_file():
         remember_echo(qq_notification_text)
 
         try:
-            onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": qq_notification_text}, timeout=3)
+            send_group([text_seg(qq_notification_text)], timeout=3)
         except Exception as e:
             print(f"发送文件前置文字提示失败: {e}")
 
@@ -340,7 +340,7 @@ def upload_file():
         safe_filename = html.escape(filename or "")
         add_chat_message(
             "网页",
-            f"[网页-{location}]{html.escape(username)}: <span style='color:#008800;'>[文件: {safe_filename}]</span> <a href='/api/download_file?id={file_id}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>",
+            f"[网页-{html.escape(location)}]{html.escape(username)}: <span style='color:#008800;'>[文件: {safe_filename}]</span> <a href='/api/download_file?id={file_id}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>",
             username,
             f"[文件: {filename}]",
         )
@@ -556,6 +556,7 @@ def handle_nokia_ajax():
 
 
 app.add_url_rule("/webhook", view_func=receive_qq_msg, methods=["POST"])
+
 
 
 @app.route("/view_image")

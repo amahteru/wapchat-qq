@@ -1,10 +1,12 @@
 import ipaddress
 import os
 import re
+import secrets
 import time
 
 from flask import request, session
 import requests
+from pymongo.errors import DuplicateKeyError
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from common import (
@@ -23,21 +25,17 @@ ACCOUNT_RE = re.compile(r"^[A-Za-z0-9_]{3,15}$")
 
 
 def load_users():
-    temp_db = {}
-    try:
-        for user in users_collection.find():
-            account = user["_id"]
-            temp_db[account] = {
-                "password": user.get("password"),
-                "nickname": user.get("nickname"),
-                "ip": user.get("ip"),
-                "status": user.get("status"),
-                "reason": user.get("reason", ""),
-                "location": user.get("location", ""),
-            }
-    except Exception as e:
-        print(f"读取云数据库失败: {e}")
-    return temp_db
+    return {
+        user["_id"]: {
+            "password": user.get("password"),
+            "nickname": user.get("nickname"),
+            "ip": user.get("ip"),
+            "status": user.get("status"),
+            "reason": user.get("reason", ""),
+            "location": user.get("location", ""),
+        }
+        for user in users_collection.find()
+    }
 
 
 users_db = load_users()
@@ -93,7 +91,7 @@ def process_login_form():
 def get_active_account():
     account = session.get("nokia_account")
     user = users_db.get(account) if account else None
-    if not user or user.get("status") == "pending":
+    if not user or user.get("status") in ("pending", "banned"):
         return None
     return account
 
@@ -128,8 +126,11 @@ def try_login(account, password):
         login_failures[account] = login_failures.get(account, 0) + 1
         return "账号或密码错误。"
 
-    if users_db[account].get("status") == "pending":
+    status = users_db[account].get("status")
+    if status == "pending":
         return "账号正在审核中，请等待群管理员通过。"
+    if status == "banned":
+        return "账号已被封禁。"
 
     login_failures.pop(account, None)
     session.permanent = True
@@ -190,7 +191,9 @@ def register_account(account, password, reason, req):
         "time": time.time(),
     }
     try:
-        users_collection.update_one({"_id": account}, {"$set": user_data}, upsert=True)
+        users_collection.insert_one({"_id": account, **user_data})
+    except DuplicateKeyError:
+        return False, "账号已存在，请直接登录。"
     except Exception as e:
         print(f"写入云数据库单用户失败: {e}")
         return False, "服务暂时不可用，请稍后再试。"
@@ -205,9 +208,26 @@ def register_account(account, password, reason, req):
     return True, "申请已提交，请等待群管理员审核。"
 
 
-ADMIN_COMMAND_RE = re.compile(
-    r"^(通过|拒绝|删号|待审核|删文件)(?:\s+(.+))?$", flags=re.DOTALL
+ADMIN_HELP = (
+    "[指令] 仅群主/管理员可用:\n"
+    "待审核 | 通过 账号 | 拒绝 账号\n"
+    "封禁 账号 | 解封 账号 | 删号 账号\n"
+    "重置密码 账号 (新密码私聊发给你)\n"
+    "用户列表 [页码] | 状态 | 删文件 文件名\n"
+    "撤回机器人转发的网页消息，网页上也会同步撤回。"
 )
+
+
+ADMIN_COMMAND_RE = re.compile(
+    r"^(通过|拒绝|删号|封禁|解封|重置密码|待审核|用户列表|状态|帮助|删文件)(?:\s+(.+))?$",
+    flags=re.DOTALL,
+)
+
+
+NO_ARG_COMMANDS = {"待审核", "状态", "帮助"}
+
+
+USERS_PER_PAGE = 30
 
 
 def is_group_manager(data):
@@ -220,6 +240,140 @@ def is_group_manager(data):
         except Exception as e:
             print(f"查询群成员身份失败: {e}")
     return role in ("owner", "admin")
+
+
+def list_pending():
+    pending = [(acc, u) for acc, u in users_db.items() if u.get("status") == "pending"]
+    if not pending:
+        return "[审核] 目前没有待审核的账号。"
+    lines = [f"[审核] 待审核 {len(pending)} 个:"]
+    for acc, u in pending[:10]:
+        lines.append(f"{acc} ({u.get('location') or '未知地域'}): {u.get('reason') or '无'}")
+    if len(pending) > 10:
+        lines.append("……其余请处理完后再查看")
+    return "\n".join(lines)
+
+
+def list_users(arg):
+    try:
+        page = max(int(arg or 1), 1)
+    except ValueError:
+        page = 1
+    users = sorted(
+        ((acc, u) for acc, u in users_db.items() if u.get("status") != "pending"),
+        key=lambda item: item[0].lower(),
+    )
+    if not users:
+        return "[用户] 还没有正式用户。"
+    total_pages = (len(users) + USERS_PER_PAGE - 1) // USERS_PER_PAGE
+    page = min(page, total_pages)
+    start = (page - 1) * USERS_PER_PAGE
+    lines = [f"[用户] 共 {len(users)} 个，第 {page}/{total_pages} 页:"]
+    for acc, u in users[start : start + USERS_PER_PAGE]:
+        mark = " (已封禁)" if u.get("status") == "banned" else ""
+        name = u.get("nickname") or acc
+        lines.append(f"{acc}" + (f" / {name}" if name != acc else "") + mark)
+    if page < total_pages:
+        lines.append(f"下一页请发「用户列表 {page + 1}」")
+    return "\n".join(lines)
+
+
+def format_size(size):
+    return f"{size / 1024 / 1024:.1f}MB"
+
+
+def status_report():
+    from common import APP_START_TIME, chat_collection, get_online_count, images_collection
+
+    counts = {"active": 0, "pending": 0, "banned": 0}
+    for u in users_db.values():
+        status = u.get("status")
+        counts[status if status in counts else "active"] += 1
+    uptime = int(time.time()) - APP_START_TIME
+    lines = [
+        "[状态]",
+        f"用户: 正式 {counts['active']} / 待审核 {counts['pending']} / 封禁 {counts['banned']}",
+        f"在线: {get_online_count()} 人，已运行 {uptime // 3600} 小时 {uptime % 3600 // 60} 分",
+    ]
+    try:
+        files_size = sum(d.get("size", 0) or 0 for d in files_collection.find({}, {"size": 1}))
+        lines.append(
+            f"聊天记录 {chat_collection.estimated_document_count()} 条，"
+            f"图片 {images_collection.estimated_document_count()} 张，"
+            f"网盘 {files_collection.estimated_document_count()} 个文件 ({format_size(files_size)})"
+        )
+        stats = files_collection.database.command("dbStats")
+        lines.append(f"数据库占用: {format_size(stats.get('storageSize', 0) + stats.get('indexSize', 0))} / 512MB")
+    except Exception as e:
+        print(f"统计数据库用量失败: {e}")
+    return "\n".join(lines)
+
+
+def send_private(qq, text):
+    try:
+        resp = onebot(
+            "send_private_msg",
+            {"user_id": int(qq), "group_id": TARGET_GROUP_ID, "message": [{"type": "text", "data": {"text": text}}]},
+            timeout=5,
+        )
+        return resp.get("status") == "ok"
+    except Exception as e:
+        print(f"机器人私聊失败: {e}")
+        return False
+
+
+def set_status(account, status):
+    users_collection.update_one({"_id": account}, {"$set": {"status": status}})
+    users_db[account]["status"] = status
+
+
+def handle_account_command(command, account, sender_qq):
+    user = users_db.get(account)
+    if not user:
+        return f"[审核] 找不到账号 {account}。"
+    status = user.get("status")
+
+    if command == "通过":
+        if status != "pending":
+            return f"[审核] 账号 {account} 不在待审核状态。"
+        set_status(account, "active")
+        return f"[审核] 账号 {account} 已通过，可以登录了。"
+
+    if command == "拒绝" and status != "pending":
+        return f"[审核] 账号 {account} 已是正式账号，如需删除请发「删号 {account}」。"
+
+    if command in ("拒绝", "删号"):
+        users_collection.delete_one({"_id": account})
+        users_db.pop(account, None)
+        online_sessions.pop(account, None)
+        return f"[审核] 账号 {account} 已删除，名额已释放。"
+
+    if command == "封禁":
+        if status == "banned":
+            return f"[审核] 账号 {account} 已经是封禁状态。"
+        set_status(account, "banned")
+        online_sessions.pop(account, None)
+        return f"[审核] 账号 {account} 已封禁，账号名和注册 IP 都不会释放。"
+
+    if command == "解封":
+        if status != "banned":
+            return f"[审核] 账号 {account} 没有被封禁。"
+        set_status(account, "active")
+        return f"[审核] 账号 {account} 已解封。"
+
+    if command == "重置密码":
+        if status == "pending":
+            return f"[审核] 账号 {account} 还在待审核，不需要重置密码。"
+        new_password = secrets.token_urlsafe(6)
+        if not send_private(sender_qq, f"[WapChat] 账号 {account} 的新密码: {new_password}"):
+            return "[审核] 私聊发送失败，密码没有改动。请先加机器人为好友再试。"
+        password_hash = hash_password(new_password)
+        users_collection.update_one({"_id": account}, {"$set": {"password": password_hash}})
+        user["password"] = password_hash
+        login_failures.pop(account, None)
+        return f"[审核] 账号 {account} 的密码已重置，新密码已私聊发给你。"
+
+    return None
 
 
 def handle_admin_command(data):
@@ -239,76 +393,41 @@ def handle_admin_command(data):
     if not sender_qq or sender_qq in bot_ids:
         return False
 
+    command = match.group(1)
+    arg = (match.group(2) or "").strip()
+    if command in NO_ARG_COMMANDS and arg:
+        return False
+    if command not in NO_ARG_COMMANDS | {"用户列表"} and not arg:
+        return False
+    if command not in NO_ARG_COMMANDS | {"用户列表", "删文件"} and not ACCOUNT_RE.match(arg):
+        return False
+
     if not is_group_manager(data):
         return False
 
-    command = match.group(1)
-    arg = (match.group(2) or "").strip()
-
-    if command == "待审核":
-        if arg:
-            return False
-        pending = [
-            (acc, u) for acc, u in users_db.items() if u.get("status") == "pending"
-        ]
-        if not pending:
-            bot_say("[审核] 目前没有待审核的账号。")
-        else:
-            lines = [f"[审核] 待审核 {len(pending)} 个:"]
-            for acc, u in pending[:10]:
-                lines.append(
-                    f"{acc} ({u.get('location') or '未知地域'}): {u.get('reason') or '无'}"
-                )
-            if len(pending) > 10:
-                lines.append("……其余请处理完后再查看")
-            bot_say("\n".join(lines))
-        return True
-
-    if not arg:
-        return False
-
-    if command == "删文件":
-        try:
+    try:
+        if command == "帮助":
+            reply = ADMIN_HELP
+        elif command == "待审核":
+            reply = list_pending()
+        elif command == "用户列表":
+            reply = list_users(arg)
+        elif command == "状态":
+            reply = status_report()
+        elif command == "删文件":
             result = files_collection.delete_many({"filename": arg})
             if result.deleted_count:
-                bot_say(f"[网盘] 已删除 {result.deleted_count} 个名为 {arg} 的文件。")
+                reply = f"[网盘] 已删除 {result.deleted_count} 个名为 {arg} 的文件。"
             else:
-                bot_say(f"[网盘] 找不到名为 {arg} 的文件。")
-        except Exception as e:
-            print(f"管理员删除网盘文件失败: {e}")
-            bot_say("[网盘] 删除失败，数据库暂时不可用。")
-        return True
-
-    account = arg
-    if not ACCOUNT_RE.match(account):
-        return False
-
-    user = users_db.get(account)
-    if not user:
-        bot_say(f"[审核] 找不到账号 {account}。")
-        return True
-
-    try:
-        if command == "通过":
-            if user.get("status") != "pending":
-                bot_say(f"[审核] 账号 {account} 不在待审核状态。")
-                return True
-            users_collection.update_one(
-                {"_id": account}, {"$set": {"status": "active"}}
-            )
-            user["status"] = "active"
-            bot_say(f"[审核] 账号 {account} 已通过，可以登录了。")
+                reply = f"[网盘] 找不到名为 {arg} 的文件。"
         else:
-            if command == "拒绝" and user.get("status") != "pending":
-                bot_say(f"[审核] 账号 {account} 已是正式账号，如需删除请发「删号 {account}」。")
-                return True
-            users_collection.delete_one({"_id": account})
-            users_db.pop(account, None)
-            online_sessions.pop(account, None)
-            bot_say(f"[审核] 账号 {account} 已删除，名额已释放。")
+            reply = handle_account_command(command, arg, sender_qq)
     except Exception as e:
-        print(f"管理员审批写入云数据库失败: {e}")
-        bot_say("[审核] 操作失败，数据库暂时不可用。")
+        print(f"执行群指令「{command}」失败: {e}")
+        reply = "[审核] 操作失败，数据库暂时不可用。"
+
+    if reply:
+        bot_say(reply)
     return True
 
 
@@ -317,18 +436,8 @@ def nickname(account):
 
 
 def get_real_ip(req):
-    cf_custom_ip = req.headers.get("X-Real-IP-Custom")
-    if cf_custom_ip:
-        return cf_custom_ip.split(",")[0].strip()
-
-    cf_ip = req.headers.get("CF-Connecting-IP")
-    if cf_ip:
-        return cf_ip.split(",")[0].strip()
-
-    forwarded_for = req.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return req.remote_addr or "127.0.0.1"
+    forwarded = req.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    return forwarded or req.remote_addr or ""
 
 
 def get_ip_location(ip, req):
@@ -403,17 +512,13 @@ def get_ip_location(ip, req):
             location = f"{pro}省{city}市" if city else f"{pro}省"
 
     if not location:
-        cf_country = req.headers.get("X-Real-Country")
-        cf_region = req.headers.get("X-Real-Region")
+        country = req.headers.get("X-Real-Country", "")
+        region = re.sub(r"[^A-Za-z .-]", "", req.headers.get("X-Real-Region", ""))[:30].strip()
+        if country == "CN":
+            return f"中国-{region}" if region else "中国"
+        if re.fullmatch(r"[A-Z]{2}", country):
+            return f"海外({country})"
+        return "未知地域"
 
-        if cf_country == "CN":
-            location = f"中国-{cf_region}" if cf_region else "中国"
-        elif cf_country:
-            location = f"海外({cf_country})"
-        else:
-            location = "未知地域"
-
-    if location != "未知地域":
-        ip_location_cache[ip] = location
-
+    ip_location_cache[ip] = location
     return location

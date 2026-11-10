@@ -80,21 +80,36 @@ files_collection = db["files"]
 settings_collection = db["settings"]
 
 
+def wait_for_mongo():
+    delay = 2
+    while True:
+        try:
+            client.admin.command("ping")
+            return
+        except Exception as e:
+            print(f"连接 MongoDB 失败，{delay} 秒后重试: {e}")
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
+
+
+wait_for_mongo()
+
+
+chat_collection.create_index("id")
+chat_collection.create_index("qq_msg_id")
+images_collection.create_index("time")
+files_collection.create_index("time")
+files_collection.create_index("filename")
+
+
 def load_secret_key():
-    env_key = os.environ.get("FLASK_SECRET_KEY")
-    if env_key:
-        return env_key
-    try:
-        doc = settings_collection.find_one_and_update(
-            {"_id": "flask_secret_key"},
-            {"$setOnInsert": {"value": secrets.token_hex(32)}},
-            upsert=True,
-            return_document=ReturnDocument.AFTER,
-        )
-        return doc["value"]
-    except Exception as e:
-        print(f"读取会话密钥失败，本次启动使用临时密钥(重启后需重新登录): {e}")
-        return secrets.token_hex(32)
+    doc = settings_collection.find_one_and_update(
+        {"_id": "flask_secret_key"},
+        {"$setOnInsert": {"value": secrets.token_hex(32)}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return doc["value"]
 
 
 SECRET_KEY = load_secret_key()
@@ -148,17 +163,9 @@ print(f"✅ 已加载 {len(QQ_FACES)} 个 QQ 表情、{len(KAOMOJI_LIST)} 个颜
 
 
 def load_chat_history():
-    history = []
-    max_id = 0
-    try:
-        docs = list(chat_collection.find({}, {"_id": 0}).sort("id", -1).limit(50))
-        docs.reverse()
-        history = docs
-        if history:
-            max_id = history[-1]["id"]
-    except Exception as e:
-        print(f"读取云端聊天记录失败: {e}")
-    return history, max_id
+    history = list(chat_collection.find({}, {"_id": 0}).sort("id", -1).limit(50))
+    history.reverse()
+    return history, (history[-1]["id"] if history else 0)
 
 
 def save_chat_message(msg_dict):
@@ -237,11 +244,11 @@ def get_online_count():
     current_time = time.time()
     expired_accounts = [
         acc
-        for acc, last_active in online_sessions.items()
+        for acc, last_active in list(online_sessions.items())
         if current_time - last_active > ONLINE_TIMEOUT
     ]
     for acc in expired_accounts:
-        del online_sessions[acc]
+        online_sessions.pop(acc, None)
     return len(online_sessions)
 
 

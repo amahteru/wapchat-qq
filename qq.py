@@ -11,14 +11,14 @@ ONEBOT_URL = "http://127.0.0.1:3000"
 qq_name_cache = LimitedDict(1000)
 
 
-def get_qq_name(group_id, qq):
+def get_qq_name(qq):
     qq_str = str(qq)
     if qq_str in qq_name_cache:
         return qq_name_cache[qq_str]
     try:
-        resp = onebot("get_group_member_info", {"group_id": group_id, "user_id": int(qq)}, timeout=1.5)
+        resp = onebot("get_group_member_info", {"group_id": TARGET_GROUP_ID, "user_id": int(qq)}, timeout=1.5)
 
-        if resp and resp.get("status") in ["ok", "success"]:
+        if resp.get("status") == "ok":
             data = resp.get("data", {})
             name = clean_qq_name(data.get("card") or data.get("nickname")) or qq_str
 
@@ -45,7 +45,7 @@ def get_qq_by_name(target_name):
     try:
         resp = onebot("get_group_member_list", {"group_id": TARGET_GROUP_ID}, timeout=2)
 
-        if resp and resp.get("status") in ["ok", "success"]:
+        if resp.get("status") == "ok":
             members = resp.get("data", [])
             found_uid = None
             for member in members:
@@ -85,10 +85,21 @@ def remember_echo(text):
         recent_sent_messages.pop(0)
 
 
+def text_seg(text):
+    return {"type": "text", "data": {"text": text}}
+
+
+def send_group(segments, timeout=5):
+    resp = onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": segments}, timeout=timeout)
+    if resp.get("status") != "ok":
+        raise RuntimeError(resp.get("wording") or resp.get("message") or "机器人返回失败")
+    return (resp.get("data") or {}).get("message_id")
+
+
 def bot_say(text):
     remember_echo(text)
     try:
-        onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": [{"type": "text", "data": {"text": text}}]}, timeout=5)
+        send_group([text_seg(text)])
         return True
     except Exception as e:
         print(f"机器人发送群消息失败: {e}")

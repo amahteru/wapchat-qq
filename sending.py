@@ -4,13 +4,12 @@ import time
 
 from common import (
     LimitedDict,
-    TARGET_GROUP_ID,
     add_chat_message,
     chat_history,
     filter_emoji,
     has_banned_word,
 )
-from qq import get_qq_by_name, get_qq_name, onebot, remember_echo
+from qq import get_qq_by_name, get_qq_name, remember_echo, send_group, text_seg
 from accounts import get_ip_location, get_real_ip, nickname
 
 
@@ -30,6 +29,9 @@ ip_last_send_time = LimitedDict(1000)
 
 
 ip_last_message = LimitedDict(1000)
+
+
+MENTION_RE = r"\[@([^\]]+)\]|(?<![\w.-])@([\w一-龥·_-]+)"
 
 
 def highlight_mentions(safe_text):
@@ -57,8 +59,6 @@ def send_web_message(account, raw_text, req):
     intercept_msg = None
     if len(msg_text) > MAX_MSG_LENGTH:
         intercept_msg = f"消息过长，最多{MAX_MSG_LENGTH}字。"
-    elif "[CQ:" in msg_text:
-        intercept_msg = "消息包含不允许的特殊字符。"
     elif has_banned_word(msg_text):
         intercept_msg = "消息包含违规词。"
     elif msg_text == ip_last_message.get(client_ip, ""):
@@ -80,7 +80,7 @@ def send_web_message(account, raw_text, req):
 
     reply_prefix_qq = ""
     reply_prefix_web = ""
-    reply_cq_code = ""
+    reply_segments = []
     clean_text = msg_text
 
     reply_match = re.search(r"^\[回复:(\d+)\]\s*", msg_text)
@@ -96,54 +96,47 @@ def send_web_message(account, raw_text, req):
 
             target_qq_msg_id = target_msg.get("qq_msg_id")
             if target_qq_msg_id:
-                reply_cq_code = f"[CQ:reply,id={target_qq_msg_id}]"
+                reply_segments = [{"type": "reply", "data": {"id": str(target_qq_msg_id)}}]
             else:
                 reply_prefix_qq = f"[回复 @{t_sender}: {t_text}]\n"
 
             reply_prefix_web = f'<span class="reply-text">[回复 @{html.escape(t_sender)}: {html.escape(t_text)}]</span><br/>'
 
-    mention_pattern = r"\[@([^\]]+)\]|(?<![\w.-])@([\w\u4e00-\u9fa5·_-]+)"
-    mentions = {}
-    for match in re.finditer(mention_pattern, clean_text):
-        name = match.group(1) or match.group(2)
-        if name not in mentions:
-            mentions[name] = get_qq_by_name(name)
-
-    def replace_at(match):
-        qq_uid = mentions.get(match.group(1) or match.group(2))
-        return f"[CQ:at,qq={qq_uid}] " if qq_uid else match.group(0)
-
-    def replace_at_for_echo(match):
-        qq_uid = mentions.get(match.group(1) or match.group(2))
-        if not qq_uid:
-            return match.group(0)
-        if qq_uid == "all":
-            return "[@全体成员] "
-        return f"[@{get_qq_name(TARGET_GROUP_ID, qq_uid)}] "
-
-    qq_clean_text = re.sub(mention_pattern, replace_at, clean_text)
-    echo_clean_text = re.sub(mention_pattern, replace_at_for_echo, clean_text)
-
     location = get_ip_location(client_ip, req)
-    full_message = (
-        f"{reply_cq_code}{reply_prefix_qq}[{location} - {username}] {qq_clean_text}"
-    )
-    remember_echo(f"{reply_prefix_qq}[{location} - {username}] {echo_clean_text}")
+    header = f"{reply_prefix_qq}[{location} - {username}] "
+    segments = reply_segments + [text_seg(header)]
+    echo_text = header
+
+    pos = 0
+    buf = ""
+    for match in re.finditer(MENTION_RE, clean_text):
+        qq_uid = get_qq_by_name(match.group(1) or match.group(2))
+        buf += clean_text[pos : match.start()]
+        pos = match.end()
+        if not qq_uid:
+            buf += match.group(0)
+            continue
+        segments += [text_seg(buf), {"type": "at", "data": {"qq": qq_uid}}, text_seg(" ")]
+        shown = "全体成员" if qq_uid == "all" else get_qq_name(qq_uid)
+        echo_text += f"{buf}[@{shown}] "
+        buf = ""
+    buf += clean_text[pos:]
+    segments.append(text_seg(buf))
+    echo_text += buf
+    segments = [seg for seg in segments if seg["type"] != "text" or seg["data"]["text"]]
+
+    remember_echo(echo_text)
 
     try:
-        resp = onebot("send_group_msg", {"group_id": TARGET_GROUP_ID, "message": full_message}, timeout=3)
+        qq_msg_id = send_group(segments, timeout=3)
     except Exception as e:
         print(f"发送到QQ失败: {e}")
         return "连接 QQ 机器人失败，请稍后再试。"
 
-    qq_msg_id = None
-    if resp and resp.get("status") in ["ok", "success"]:
-        qq_msg_id = (resp.get("data") or {}).get("message_id")
-
     safe_text = highlight_mentions(html.escape(clean_text).replace("\n", "<br/>"))
     add_chat_message(
         "网页",
-        f"{reply_prefix_web}[网页-{location}]{html.escape(username)}: {safe_text}",
+        f"{reply_prefix_web}[网页-{html.escape(location)}]{html.escape(username)}: {safe_text}",
         username,
         clean_text,
         qq_msg_id=qq_msg_id,

@@ -45,16 +45,10 @@ RECALLED_HTML = f'<span style="color:#999; font-size:12px;"><i>{RECALLED_TEXT}</
 def receive_qq_msg():
     client_ip = request.remote_addr or ""
 
-    if WEBHOOK_SECRET_TOKEN:
-        authorized = hmac.compare_digest(
-            request.args.get("token", "").encode("utf-8"),
-            WEBHOOK_SECRET_TOKEN.encode("utf-8"),
-        )
-    else:
-        authorized = (
-            client_ip in ("127.0.0.1", "::1")
-            and "X-Forwarded-For" not in request.headers
-        )
+    authorized = bool(WEBHOOK_SECRET_TOKEN) and hmac.compare_digest(
+        request.args.get("token", "").encode("utf-8"),
+        WEBHOOK_SECRET_TOKEN.encode("utf-8"),
+    )
 
     if not authorized:
         print(f"[安全拦截] 拦截未授权的 Webhook 请求！来源IP: {client_ip}")
@@ -161,7 +155,7 @@ def receive_qq_msg():
             elif seg_type == "poke":
                 target_qq = str(segment.get("data", {}).get("qq", ""))
                 if target_qq and target_qq != "all":
-                    target_name = get_qq_name(TARGET_GROUP_ID, target_qq)
+                    target_name = get_qq_name(target_qq)
                     raw_msg += f"[戳了戳 {target_name}]"
                 else:
                     raw_msg += "[戳了戳]"
@@ -172,7 +166,7 @@ def receive_qq_msg():
                 else:
                     target_name = segment.get("data", {}).get("name")
                     if not target_name:
-                        target_name = get_qq_name(TARGET_GROUP_ID, target_qq)
+                        target_name = get_qq_name(target_qq)
                     raw_msg += f"[@{target_name}] "
             elif seg_type == "reply":
                 msg_id = segment.get("data", {}).get("id")
@@ -182,26 +176,20 @@ def receive_qq_msg():
                 if msg_id:
                     try:
                         resp = onebot("get_msg", {"message_id": msg_id}, timeout=1.5)
-                        if resp and resp.get("status") in ["ok", "success"]:
+                        if resp.get("status") == "ok":
                             orig_data = resp.get("data", {})
 
                             orig_qq = orig_data.get("sender", {}).get("user_id")
                             if orig_qq:
-                                reply_sender = get_qq_name(TARGET_GROUP_ID, orig_qq)
+                                reply_sender = get_qq_name(orig_qq)
 
-                            orig_chain = orig_data.get("message", [])
-                            if isinstance(orig_chain, list):
-                                for orig_seg in orig_chain:
-                                    if orig_seg.get("type") == "text":
-                                        reply_text += orig_seg.get("data", {}).get(
-                                            "text", ""
-                                        )
-                                    elif orig_seg.get("type") == "image":
-                                        reply_text += "[图片]"
-                                    elif orig_seg.get("type") == "face":
-                                        reply_text += "[表情]"
-                            elif isinstance(orig_chain, str):
-                                reply_text = orig_chain
+                            for orig_seg in orig_data.get("message", []):
+                                if orig_seg.get("type") == "text":
+                                    reply_text += orig_seg.get("data", {}).get("text", "")
+                                elif orig_seg.get("type") == "image":
+                                    reply_text += "[图片]"
+                                elif orig_seg.get("type") == "face":
+                                    reply_text += "[表情]"
 
                             reply_text = reply_text.replace("\n", " ").replace("\r", "")
                             if len(reply_text) > 18:
@@ -285,70 +273,48 @@ def receive_qq_msg():
         recalled_local_id = None
 
         if notice_type == "notify" and sub_type == "poke":
-            sender_name = get_qq_name(TARGET_GROUP_ID, user_qq)
+            sender_name = get_qq_name(user_qq)
             target_qq = str(data.get("target_id", ""))
-            target_name = get_qq_name(TARGET_GROUP_ID, target_qq)
+            target_name = get_qq_name(target_qq)
             sys_msg_text = f"{sender_name} 戳了戳 {target_name}"
 
         elif notice_type == "group_increase":
-            user_name = get_qq_name(TARGET_GROUP_ID, user_qq)
+            user_name = get_qq_name(user_qq)
             sys_msg_text = f"欢迎 {user_name} 加入了群聊！"
         elif notice_type == "group_decrease":
-            user_name = get_qq_name(TARGET_GROUP_ID, user_qq)
+            user_name = get_qq_name(user_qq)
             if sub_type == "leave":
                 sys_msg_text = f"{user_name} 默默离开了群聊"
             elif sub_type in ["kick", "kick_me"]:
-                operator_name = get_qq_name(TARGET_GROUP_ID, operator_qq)
+                operator_name = get_qq_name(operator_qq)
                 sys_msg_text = f"{user_name} 被 {operator_name} 请出了群聊"
 
         elif notice_type == "group_recall":
-            user_name = get_qq_name(TARGET_GROUP_ID, user_qq)
-            sys_msg_text = ""
-
             recalled_qq_msg_id = data.get("message_id")
+            recalled_str = str(recalled_qq_msg_id or "")
+            id_filter = {"qq_msg_id": {"$in": [recalled_qq_msg_id, recalled_str]}}
 
-            if recalled_qq_msg_id:
-                recalled_str = str(recalled_qq_msg_id)
+            original_msg = chat_collection.find_one(id_filter) if recalled_qq_msg_id else None
+            if original_msg and original_msg.get("pure_text") != RECALLED_TEXT:
+                operator_name = get_qq_name(operator_qq or user_qq)
+                sys_msg_text = f"{operator_name} 撤回了一条消息"
 
-                if recalled_str not in processed_notices_cache:
-                    processed_notices_cache[recalled_str] = True
+                for m in chat_history:
+                    if str(m.get("qq_msg_id")) == recalled_str:
+                        recalled_local_id = m["id"]
+                        m["text"] = RECALLED_HTML
+                        m["pure_text"] = RECALLED_TEXT
+                        break
 
-                    original_msg = chat_collection.find_one(
-                        {"qq_msg_id": {"$in": [recalled_qq_msg_id, recalled_str]}}
+                try:
+                    chat_collection.update_many(
+                        id_filter, {"$set": {"text": RECALLED_HTML, "pure_text": RECALLED_TEXT}}
                     )
-
-                    if original_msg:
-                        if original_msg.get("pure_text") != RECALLED_TEXT:
-                            sys_msg_text = f"{user_name} 撤回了一条消息"
-
-                            for m in chat_history:
-                                if str(m.get("qq_msg_id")) == recalled_str:
-                                    recalled_local_id = m["id"]
-                                    m["text"] = (
-                                        RECALLED_HTML
-                                    )
-                                    m["pure_text"] = RECALLED_TEXT
-                                    break
-
-                            try:
-                                chat_collection.update_many(
-                                    {
-                                        "qq_msg_id": {
-                                            "$in": [recalled_qq_msg_id, recalled_str]
-                                        }
-                                    },
-                                    {
-                                        "$set": {
-                                            "text": RECALLED_HTML,
-                                            "pure_text": RECALLED_TEXT,
-                                        }
-                                    },
-                                )
-                            except Exception as e:
-                                print(f"云端更新撤回状态失败: {e}")
+                except Exception as e:
+                    print(f"云端更新撤回状态失败: {e}")
 
         elif notice_type == "group_upload":
-            user_name = get_qq_name(TARGET_GROUP_ID, user_qq)
+            user_name = get_qq_name(user_qq)
             file_info = data.get("file", {})
             file_name = file_info.get("name", "未知文件")
 
@@ -371,7 +337,7 @@ def receive_qq_msg():
                 if not file_url and file_id:
                     try:
                         resp = onebot("get_group_file_url", {"group_id": TARGET_GROUP_ID, "file_id": file_id, "busid": file_busid}, timeout=2)
-                        if resp and resp.get("status") in ["ok", "success"]:
+                        if resp.get("status") == "ok":
                             file_url = resp.get("data", {}).get("url", "")
                     except Exception:
                         pass
@@ -396,14 +362,14 @@ def receive_qq_msg():
                 )
 
         elif notice_type == "group_ban":
-            user_name = get_qq_name(TARGET_GROUP_ID, user_qq)
+            user_name = get_qq_name(user_qq)
             if sub_type == "ban":
                 duration = data.get("duration", 0) // 60
                 sys_msg_text = f"{user_name} 被管理员禁言了 {duration} 分钟"
             elif sub_type == "lift_ban":
                 sys_msg_text = f"{user_name} 被解除了禁言"
         elif notice_type == "group_admin":
-            user_name = get_qq_name(TARGET_GROUP_ID, user_qq)
+            user_name = get_qq_name(user_qq)
             if sub_type == "set":
                 sys_msg_text = f"{user_name} 荣升为群管理员"
             elif sub_type == "unset":
