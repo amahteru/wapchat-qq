@@ -20,7 +20,6 @@ from common import (
     chat_history,
     filter_emoji,
     images_collection,
-    processed_notices_cache,
     save_image,
     sign_url,
     to_jpeg_b64,
@@ -66,12 +65,9 @@ def receive_qq_msg():
         if handle_admin_command(data):
             return jsonify({"status": "admin_command"})
 
-        sender = data.get("sender", {})
-        sender_name = clean_qq_name(sender.get("nickname", "某人")) or "某人"
-
-        sender_qq = str(sender.get("user_id", ""))
-        if sender_qq:
-            name_to_qq_cache[sender_name] = sender_qq
+        sender = data["sender"]
+        sender_name = clean_qq_name(sender.get("card") or sender.get("nickname")) or "某人"
+        name_to_qq_cache[sender_name] = str(sender["user_id"])
 
         raw_msg = ""
         qq_reply_html = ""
@@ -83,24 +79,19 @@ def receive_qq_msg():
                 raw_msg += segment.get("data", {}).get("text", "")
             elif seg_type == "image":
                 img_url = segment.get("data", {}).get("url", "")
+                saved = False
                 if img_url:
                     img_id = hashlib.md5(img_url.encode("utf-8")).hexdigest()[:16]
-
-                    if not images_collection.find_one({"_id": img_id}):
+                    saved = images_collection.find_one({"_id": img_id}, {"_id": 1}) is not None
+                    if not saved:
                         try:
-                            headers = {"User-Agent": "Mozilla/5.0"}
-                            resp = requests.get(img_url, headers=headers, timeout=5)
-                            if resp.status_code == 200:
-                                save_image(
-                                    img_id,
-                                    to_jpeg_b64(io.BytesIO(resp.content), 240, 100000, 70),
-                                )
+                            resp = requests.get(img_url, timeout=5)
+                            resp.raise_for_status()
+                            save_image(img_id, to_jpeg_b64(io.BytesIO(resp.content), 240, 100000, 70))
+                            saved = True
                         except Exception as e:
-                            print(f"图床持久化或清理失败: {e}")
-
-                    raw_msg += f"[图片] {{IMG:{img_id}}}"
-                else:
-                    raw_msg += "[图片]"
+                            print(f"保存群图片失败: {e}")
+                raw_msg += f"[图片] {{IMG:{img_id}}}" if saved else "[图片]"
             elif seg_type == "face":
                 face_data = segment.get("data", {})
                 face_text = face_data.get("text")
@@ -128,21 +119,12 @@ def receive_qq_msg():
                 raw_msg += "[视频]"
 
             elif seg_type == "json":
-                card_data_str = segment.get("data", {}).get("data", "{}")
-                prompt_text = "应用卡片"
                 try:
-                    inner_json = json.loads(card_data_str)
-                    if isinstance(inner_json, dict) and "prompt" in inner_json:
-                        prompt_text = (
-                            inner_json.get("prompt", "")
-                            .replace("[", "")
-                            .replace("]", "")
-                        )
-                except:
-                    pass
-                if not prompt_text:
-                    prompt_text = "应用卡片"
-                raw_msg += f"[{prompt_text}]"
+                    card = json.loads(segment.get("data", {}).get("data", "{}"))
+                    prompt_text = str(card.get("prompt", "")).replace("[", "").replace("]", "")
+                except (ValueError, AttributeError):
+                    prompt_text = ""
+                raw_msg += f"[{prompt_text or '应用卡片'}]"
             elif seg_type == "xml":
                 raw_msg += "[图文卡片]"
             elif seg_type in ["forward", "node"]:
@@ -238,16 +220,8 @@ def receive_qq_msg():
         if event_time <= APP_START_TIME:
             return jsonify({"status": "ignored_historical_notice"})
 
-        if time.time() - APP_START_TIME < 90:
-            return jsonify({"status": "ignored_startup_burst"})
-
         notice_type = data.get("notice_type")
         user_qq = str(data.get("user_id", ""))
-
-        event_fingerprint = f"{notice_type}_{user_qq}_{event_time}"
-        if event_fingerprint in processed_notices_cache:
-            return jsonify({"status": "ignored_cached_notice"})
-        processed_notices_cache[event_fingerprint] = True
 
         sub_type = data.get("sub_type")
         operator_qq = str(data.get("operator_id", ""))

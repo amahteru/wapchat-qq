@@ -217,9 +217,6 @@ chat_history, current_msg_id = load_chat_history()
 TARGET_GROUP_ID = int(os.environ["TARGET_GROUP_ID"])
 
 
-processed_notices_cache = LimitedDict(1000, 3600)
-
-
 APP_START_TIME = int(time.time())
 
 

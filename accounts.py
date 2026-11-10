@@ -7,16 +7,20 @@ from pymongo.errors import DuplicateKeyError
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from common import (
+    APP_START_TIME,
     LimitedDict,
     TARGET_GROUP_ID,
+    chat_collection,
     files_collection,
     filter_emoji,
+    get_online_count,
     has_banned_word,
+    images_collection,
     online_sessions,
     users_collection,
 )
 from location import get_ip_location
-from qq import bot_say, onebot
+from qq import bot_say, onebot, text_seg
 
 
 ACCOUNT_RE = re.compile(r"^[A-Za-z0-9_]{3,15}$")
@@ -64,9 +68,7 @@ def process_login_form():
         return False, "账号须为3-15位字母、数字或下划线。", None
 
     if "register_btn" in request.form:
-        ok, msg = register_account(
-            account, password, request.form.get("reason", ""), request
-        )
+        ok, msg = register_account(account, password, request.form.get("reason", ""))
         return (False, None, msg) if ok else (False, msg, None)
 
     error = try_login(account, password)
@@ -76,7 +78,7 @@ def process_login_form():
 def get_active_account():
     account = session.get("nokia_account")
     user = users_db.get(account) if account else None
-    if not user or user.get("status") in ("pending", "banned"):
+    if not user or user["status"] in ("pending", "banned"):
         return None
     return account
 
@@ -95,11 +97,12 @@ def set_nickname(account, raw):
     name, error = clean_nickname(raw)
     if error:
         return None, error
-    users_db[account]["nickname"] = name
     try:
         users_collection.update_one({"_id": account}, {"$set": {"nickname": name}})
     except Exception as e:
-        print(f"修改昵称同步云端单用户失败: {e}")
+        print(f"保存昵称失败: {e}")
+        return None, "服务暂时不可用，请稍后再试。"
+    users_db[account]["nickname"] = name
     return name, None
 
 
@@ -111,7 +114,7 @@ def try_login(account, password):
         login_failures[account] = login_failures.get(account, 0) + 1
         return "账号或密码错误。"
 
-    status = users_db[account].get("status")
+    status = users_db[account]["status"]
     if status == "pending":
         return "账号正在审核中，请等待群管理员通过。"
     if status == "banned":
@@ -129,12 +132,10 @@ def hash_password(password):
 
 def verify_password(account, password):
     user = users_db.get(account)
-    if not user or not user.get("password"):
-        return False
-    return check_password_hash(user["password"], password)
+    return user is not None and check_password_hash(user["password"], password)
 
 
-def register_account(account, password, reason, req):
+def register_account(account, password, reason):
     global last_register_time
 
     reason = re.sub(r"\s+", " ", filter_emoji(reason or "")).strip()
@@ -152,12 +153,12 @@ def register_account(account, password, reason, req):
     if account in users_db:
         return False, "账号已存在，请直接登录。"
 
-    client_ip = get_real_ip(req)
-    ip_reg_count = sum(1 for u in users_db.values() if u.get("ip") == client_ip)
+    client_ip = get_real_ip(request)
+    ip_reg_count = sum(1 for u in users_db.values() if u["ip"] == client_ip)
     if ip_reg_count >= MAX_ACCOUNTS_PER_IP:
         return False, "你的IP注册账号数已达上限。"
 
-    pending_count = sum(1 for u in users_db.values() if u.get("status") == "pending")
+    pending_count = sum(1 for u in users_db.values() if u["status"] == "pending")
     if pending_count >= MAX_PENDING_ACCOUNTS:
         return False, "待审核人数过多，请稍后再试。"
 
@@ -215,11 +216,11 @@ USERS_PER_PAGE = 30
 
 
 def is_group_manager(data):
-    sender = data.get("sender", {}) or {}
+    sender = data["sender"]
     role = sender.get("role")
     if not role:
         try:
-            resp = onebot("get_group_member_info", {"group_id": TARGET_GROUP_ID, "user_id": int(sender.get("user_id", 0)), "no_cache": True}, timeout=2)
+            resp = onebot("get_group_member_info", {"group_id": TARGET_GROUP_ID, "user_id": int(sender["user_id"]), "no_cache": True}, timeout=2)
             role = (resp.get("data") or {}).get("role")
         except Exception as e:
             print(f"查询群成员身份失败: {e}")
@@ -227,12 +228,12 @@ def is_group_manager(data):
 
 
 def list_pending():
-    pending = [(acc, u) for acc, u in users_db.items() if u.get("status") == "pending"]
+    pending = [(acc, u) for acc, u in users_db.items() if u["status"] == "pending"]
     if not pending:
         return "[审核] 目前没有待审核的账号。"
     lines = [f"[审核] 待审核{len(pending)}个:"]
     for acc, u in pending[:10]:
-        lines.append(f"{acc} ({u.get('location') or '未知地域'}): {u.get('reason') or '无'}")
+        lines.append(f"{acc} ({u['location']}): {u['reason']}")
     if len(pending) > 10:
         lines.append("……其余请处理完后再查看")
     return "\n".join(lines)
@@ -244,7 +245,7 @@ def list_users(arg):
     except ValueError:
         page = 1
     users = sorted(
-        ((acc, u) for acc, u in users_db.items() if u.get("status") != "pending"),
+        ((acc, u) for acc, u in users_db.items() if u["status"] != "pending"),
         key=lambda item: item[0].lower(),
     )
     if not users:
@@ -254,9 +255,9 @@ def list_users(arg):
     start = (page - 1) * USERS_PER_PAGE
     lines = [f"[账号] 共{len(users)}个，第{page}/{total_pages}页:"]
     for acc, u in users[start : start + USERS_PER_PAGE]:
-        mark = " (已封禁)" if u.get("status") == "banned" else ""
-        name = u.get("nickname") or acc
-        lines.append(f"{acc}" + (f" / {name}" if name != acc else "") + mark)
+        mark = " (已封禁)" if u["status"] == "banned" else ""
+        name = u["nickname"]
+        lines.append(acc + (f" / {name}" if name != acc else "") + mark)
     if page < total_pages:
         lines.append(f"下一页请发「用户列表 {page + 1}」")
     return "\n".join(lines)
@@ -267,8 +268,6 @@ def format_size(size):
 
 
 def status_report():
-    from common import APP_START_TIME, chat_collection, get_online_count, images_collection
-
     counts = {"active": 0, "pending": 0, "banned": 0}
     for u in users_db.values():
         counts[u["status"]] += 1
@@ -296,7 +295,7 @@ def send_private(qq, text):
     try:
         resp = onebot(
             "send_private_msg",
-            {"user_id": int(qq), "group_id": TARGET_GROUP_ID, "message": [{"type": "text", "data": {"text": text}}]},
+            {"user_id": int(qq), "group_id": TARGET_GROUP_ID, "message": [text_seg(text)]},
             timeout=5,
         )
         return resp.get("status") == "ok"
@@ -314,7 +313,7 @@ def handle_account_command(command, account, sender_qq):
     user = users_db.get(account)
     if not user:
         return f"[账号] 找不到账号 {account}。"
-    status = user.get("status")
+    status = user["status"]
 
     if command == "通过":
         if status != "pending":
@@ -356,25 +355,18 @@ def handle_account_command(command, account, sender_qq):
         login_failures.pop(account, None)
         return f"[账号] {account} 的密码已重置，新密码已私聊发给你。"
 
-    return None
-
 
 def handle_admin_command(data):
-    segments = data.get("message", [])
-    if not isinstance(segments, list) or not segments:
-        return False
-    if any(seg.get("type") != "text" for seg in segments):
+    segments = data["message"]
+    if not segments or any(seg["type"] != "text" for seg in segments):
         return False
 
-    text = "".join(seg.get("data", {}).get("text", "") for seg in segments).strip()
+    text = "".join(seg["data"]["text"] for seg in segments).strip()
     match = ADMIN_COMMAND_RE.match(text)
     if not match:
         return False
 
-    sender_qq = str((data.get("sender", {}) or {}).get("user_id", ""))
-    if not sender_qq:
-        return False
-
+    sender_qq = str(data["sender"]["user_id"])
     command = match.group(1)
     arg = (match.group(2) or "").strip()
     if command in NO_ARG_COMMANDS and arg:
@@ -408,8 +400,7 @@ def handle_admin_command(data):
         print(f"执行群指令「{command}」失败: {e}")
         reply = "[指令] 操作失败，数据库暂时不可用。"
 
-    if reply:
-        bot_say(reply)
+    bot_say(reply)
     return True
 
 

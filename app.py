@@ -3,7 +3,6 @@ import datetime
 import hashlib
 import hmac
 import html
-import io
 import json
 import re
 import time
@@ -18,7 +17,6 @@ from flask import (
     redirect,
     url_for,
     make_response,
-    send_file,
     session,
     Response,
     stream_with_context,
@@ -36,7 +34,6 @@ from common import (
     chat_history,
     cleanup_old_files,
     files_collection,
-    filter_emoji,
     get_online_count,
     images_collection,
     online_sessions,
@@ -158,10 +155,11 @@ def view_online_users():
     active_users = [
         {
             "account": acc,
-            "nickname": filter_emoji(users_db.get(acc, {}).get("nickname", acc)),
+            "nickname": users_db[acc]["nickname"],
             "is_me": acc == account,
         }
         for acc in list(online_sessions)
+        if acc in users_db
     ]
     active_users.sort(key=lambda x: (not x["is_me"], x["account"]))
 
@@ -432,7 +430,7 @@ def wml_index():
     raw_content = render_template(
         "wml_chat.xml",
         history=wml_history,
-        saved_username=filter_emoji(nickname(account)),
+        saved_username=nickname(account),
         online_count=get_online_count(),
         notice=notice,
     )
@@ -461,7 +459,7 @@ def index():
         "chat.html",
         history=chat_history[-25:],
         last_id=chat_history[-1]["id"] if chat_history else 0,
-        saved_username=filter_emoji(nickname(account)),
+        saved_username=nickname(account),
         online_count=get_online_count(),
     )
 
@@ -522,6 +520,9 @@ def handle_nokia_ajax():
 app.add_url_rule("/webhook", view_func=receive_qq_msg, methods=["POST"])
 
 
+def attachment(name):
+    return f"attachment; filename*=UTF-8''{urllib.parse.quote(name)}"
+
 
 @app.route("/view_image")
 def view_image():
@@ -533,17 +534,10 @@ def view_image():
     if not img_id:
         return "图片链接无效。", 400
 
-    try:
-        img_doc = images_collection.find_one({"_id": img_id})
-        if not img_doc:
-            return "图片已被清理或不存在。", 404
-
-        img_bytes = base64.b64decode(img_doc["data"])
-        return send_file(io.BytesIO(img_bytes), mimetype="image/jpeg")
-
-    except Exception as e:
-        print(f"图片处理异常: {e}")
-        return "图片无法显示，可能已失效。", 500
+    img_doc = images_collection.find_one({"_id": img_id})
+    if not img_doc:
+        return "图片已被清理或不存在。", 404
+    return Response(base64.b64decode(img_doc["data"]), mimetype="image/jpeg")
 
 
 @app.route("/api/download_file")
@@ -556,22 +550,14 @@ def download_web_file():
     if not file_id:
         return "文件链接无效。", 400
 
-    try:
-        file_doc = files_collection.find_one({"_id": file_id})
-
-        if file_doc:
-            filename = file_doc["filename"]
-            response = send_file(io.BytesIO(file_doc["data"]), as_attachment=True, download_name=filename)
-            response.headers["Content-Disposition"] = (
-                f"attachment; filename*=UTF-8''{urllib.parse.quote(filename)}"
-            )
-            return response
-        else:
-            return "文件已被清理或不存在。", 404
-
-    except Exception as e:
-        print(f"文件下载异常: {e}")
-        return "下载失败，请稍后再试。", 500
+    file_doc = files_collection.find_one({"_id": file_id})
+    if not file_doc:
+        return "文件已被清理或不存在。", 404
+    return Response(
+        file_doc["data"],
+        mimetype="application/octet-stream",
+        headers={"Content-Disposition": attachment(file_doc["filename"])},
+    )
 
 
 @app.route("/api/download_qq_file")
@@ -598,10 +584,8 @@ def download_qq_file():
         if req.status_code != 200:
             return "下载失败，文件可能已过期。", 500
 
-        encoded_filename = urllib.parse.quote(file_name)
-
         response_headers = {
-            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+            "Content-Disposition": attachment(file_name),
             "Content-Type": req.headers.get("Content-Type", "application/octet-stream"),
         }
 

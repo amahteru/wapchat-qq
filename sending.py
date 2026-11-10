@@ -26,10 +26,10 @@ GLOBAL_COOLDOWN = 2
 global_last_send_time = 0
 
 
-ip_last_send_time = LimitedDict(1000)
+last_send_time = LimitedDict(1000)
 
 
-ip_last_message = LimitedDict(1000)
+last_message = LimitedDict(1000)
 
 
 MENTION_RE = r"\[@([^\]]+)\]|(?<![\w.-])@([\w一-龥·_-]+)"
@@ -55,9 +55,9 @@ def send_web_message(account, raw_text, req):
         intercept_msg = f"消息过长，最多{MAX_MSG_LENGTH}字。"
     elif has_banned_word(msg_text):
         intercept_msg = "消息包含违规词。"
-    elif msg_text == ip_last_message.get(client_ip, ""):
+    elif msg_text == last_message.get(account, ""):
         intercept_msg = "请勿重复发送相同内容。"
-    elif current_time - ip_last_send_time.get(client_ip, 0) < COOLDOWN_SECONDS:
+    elif current_time - last_send_time.get(account, 0) < COOLDOWN_SECONDS:
         intercept_msg = f"发送太快，请{COOLDOWN_SECONDS}秒后再试。"
     elif current_time - global_last_send_time < GLOBAL_COOLDOWN:
         intercept_msg = "当前发送人数过多，请稍后再试。"
@@ -68,8 +68,8 @@ def send_web_message(account, raw_text, req):
         )
         return intercept_msg
 
-    ip_last_send_time[client_ip] = current_time
-    ip_last_message[client_ip] = msg_text
+    last_send_time[account] = current_time
+    last_message[account] = msg_text
     global_last_send_time = current_time
 
     reply_prefix_qq = ""
