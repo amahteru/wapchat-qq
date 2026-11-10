@@ -29,9 +29,6 @@ def get_qq_name(qq):
     return qq_str
 
 
-recent_sent_messages = []
-
-
 def get_qq_by_name(target_name):
     if not target_name:
         return None
@@ -79,12 +76,6 @@ def clean_qq_name(name):
     return re.sub(r"\[.*?\]", "", filter_emoji(name or "")).strip()
 
 
-def remember_echo(text):
-    recent_sent_messages.append(re.sub(r"\s+", "", text))
-    if len(recent_sent_messages) > 50:
-        recent_sent_messages.pop(0)
-
-
 def text_seg(text):
     return {"type": "text", "data": {"text": text}}
 
@@ -97,7 +88,6 @@ def send_group(segments, timeout=5):
 
 
 def bot_say(text):
-    remember_echo(text)
     try:
         send_group([text_seg(text)])
         return True

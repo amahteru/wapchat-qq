@@ -373,7 +373,7 @@ def handle_admin_command(data):
         return False
 
     sender_qq = str((data.get("sender", {}) or {}).get("user_id", ""))
-    if not sender_qq or sender_qq == str(data["self_id"]):
+    if not sender_qq:
         return False
 
     command = match.group(1)

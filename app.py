@@ -49,7 +49,7 @@ from common import (
     sign_url,
     to_jpeg_b64,
 )
-from qq import onebot, remember_echo, send_group, text_seg
+from qq import onebot, send_group, text_seg
 from location import get_ip_location
 from accounts import (
     nickname,
@@ -316,7 +316,6 @@ def upload_file():
             print(f"存入网盘失败: {e}")
 
         qq_notification_text = f"[网页-{location}]{username}: [文件: {filename}]"
-        remember_echo(qq_notification_text)
 
         try:
             send_group([text_seg(qq_notification_text)], timeout=3)

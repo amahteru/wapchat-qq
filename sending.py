@@ -9,7 +9,7 @@ from common import (
     filter_emoji,
     has_banned_word,
 )
-from qq import get_qq_by_name, get_qq_name, remember_echo, send_group, text_seg
+from qq import get_qq_by_name, send_group, text_seg
 from accounts import get_real_ip, nickname
 from location import get_ip_location
 
@@ -106,7 +106,6 @@ def send_web_message(account, raw_text, req):
     location = get_ip_location(client_ip)
     header = f"{reply_prefix_qq}[{location} - {username}] "
     segments = reply_segments + [text_seg(header)]
-    echo_text = header
 
     pos = 0
     buf = ""
@@ -118,15 +117,10 @@ def send_web_message(account, raw_text, req):
             buf += match.group(0)
             continue
         segments += [text_seg(buf), {"type": "at", "data": {"qq": qq_uid}}, text_seg(" ")]
-        shown = "全体成员" if qq_uid == "all" else get_qq_name(qq_uid)
-        echo_text += f"{buf}[@{shown}] "
         buf = ""
     buf += clean_text[pos:]
     segments.append(text_seg(buf))
-    echo_text += buf
     segments = [seg for seg in segments if seg["type"] != "text" or seg["data"]["text"]]
-
-    remember_echo(echo_text)
 
     try:
         qq_msg_id = send_group(segments, timeout=3)

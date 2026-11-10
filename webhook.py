@@ -31,7 +31,6 @@ from qq import (
     get_qq_name,
     name_to_qq_cache,
     onebot,
-    recent_sent_messages,
 )
 from accounts import handle_admin_command
 from sending import highlight_mentions
@@ -204,13 +203,7 @@ def receive_qq_msg():
 
         raw_msg = filter_emoji(raw_msg)
 
-        raw_msg_no_space = re.sub(r"\s+", "", raw_msg)
-
         if raw_msg.strip():
-            if raw_msg_no_space in recent_sent_messages:
-                recent_sent_messages.remove(raw_msg_no_space)
-                return jsonify({"status": "ignored_echo"})
-
             safe_text = html.escape(raw_msg).replace("\n", "<br/>")
 
             safe_text = re.sub(
@@ -224,25 +217,10 @@ def receive_qq_msg():
 
             print(f"💬 [QQ群收到]: {safe_sender} - {raw_msg}")
 
-            if sender_qq == str(data["self_id"]):
-                final_pure_sender = ""
-
-                transformed_text = re.sub(
-                    r"\[([^\]]+?)\s*-\s*([^\]]+?)\](?:\s|<br/>)*",
-                    r"[网页-\1]\2: ",
-                    safe_text,
-                    count=1,
-                )
-
-                final_display_text = f"{qq_reply_html}{transformed_text}"
-            else:
-                final_display_text = f"{qq_reply_html}{safe_sender}: {safe_text}"
-                final_pure_sender = sender_name
-
             add_chat_message(
                 "QQ群",
-                final_display_text,
-                final_pure_sender,
+                f"{qq_reply_html}{safe_sender}: {safe_text}",
+                sender_name,
                 raw_msg,
                 qq_msg_id=data.get("message_id"),
             )
