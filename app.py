@@ -1472,7 +1472,6 @@ def index():
         last_id=chat_history[-1]["id"] if chat_history else 0,
         saved_username=filter_emoji(users_db[account].get("nickname", account)),
         online_count=get_online_count(),
-        ai_url=os.environ.get("AI_URL", "#"),
     )
 
 
