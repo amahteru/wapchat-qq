@@ -56,7 +56,7 @@ class LimitedDict(OrderedDict):
 TZ_UTC8 = timezone(timedelta(hours=8))
 
 
-MONGO_URI = os.environ.get("MONGO_URI", "")
+MONGO_URI = os.environ["MONGO_URI"]
 
 
 client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
@@ -219,7 +219,7 @@ def save_image(img_id, b64_data):
 chat_history, current_msg_id = load_chat_history()
 
 
-TARGET_GROUP_ID = int(os.environ.get("TARGET_GROUP_ID", "0"))
+TARGET_GROUP_ID = int(os.environ["TARGET_GROUP_ID"])
 
 
 processed_notices_cache = LimitedDict(1000, 3600)

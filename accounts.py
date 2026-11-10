@@ -1,4 +1,3 @@
-import os
 import re
 import secrets
 import time
@@ -374,8 +373,7 @@ def handle_admin_command(data):
         return False
 
     sender_qq = str((data.get("sender", {}) or {}).get("user_id", ""))
-    bot_ids = {str(data.get("self_id", "")), os.environ.get("BOT_QQ", "")}
-    if not sender_qq or sender_qq in bot_ids:
+    if not sender_qq or sender_qq == str(data["self_id"]):
         return False
 
     command = match.group(1)

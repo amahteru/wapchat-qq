@@ -72,7 +72,7 @@ docker build -t wapchat-qq .
 docker run -d --name wapchat-qq --restart=always -p 7860:7860 -e MONGO_URI="mongodb+srv://..." -e TARGET_GROUP_ID=123456789 -e BOT_QQ=123456789 -v wapchat-qq-login:/root/.config/QQ wapchat-qq
 ```
 
-QQ 机器人比较吃内存，建议给容器至少 1GB 内存。会自动休眠的免费托管套餐不适合：休眠期间机器人离线，醒来后可能需要重新扫码。
+实测容器启动后约占 300MB 内存 (QQ 登录前)，登录后会更多，建议给容器至少 1GB 内存。会自动休眠的免费托管套餐不适合：休眠期间机器人离线，醒来后可能需要重新扫码。
 
 ### 3. 扫码登录机器人
 

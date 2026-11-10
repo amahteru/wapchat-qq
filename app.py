@@ -323,7 +323,7 @@ def upload_file():
         except Exception as e:
             print(f"发送文件前置文字提示失败: {e}")
 
-        local_port = os.environ.get("PORT", 7860)
+        local_port = os.environ["PORT"]
         download_url = f"http://127.0.0.1:{local_port}/api/internal_download/{file_id}"
 
         internal_file_cache[file_id] = {"bytes": file_bytes, "name": filename}
@@ -651,8 +651,3 @@ def download_qq_file():
         print(f"中转QQ文件下载异常: {e}")
         return "下载失败，链接可能已失效。", 500
 
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 7860))
-    print(f"🚀 QQ 中转后端已启动！监听 {port} 端口...")
-    app.run(host="0.0.0.0", port=port)

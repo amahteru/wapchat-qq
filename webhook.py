@@ -37,7 +37,7 @@ from accounts import handle_admin_command
 from sending import highlight_mentions
 
 
-WEBHOOK_SECRET_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
+WEBHOOK_SECRET_TOKEN = os.environ["WEBHOOK_TOKEN"]
 RECALLED_TEXT = "[消息已撤回]"
 RECALLED_HTML = f'<span style="color:#999; font-size:12px;"><i>{RECALLED_TEXT}</i></span>'
 
@@ -45,7 +45,7 @@ RECALLED_HTML = f'<span style="color:#999; font-size:12px;"><i>{RECALLED_TEXT}</
 def receive_qq_msg():
     client_ip = request.remote_addr or ""
 
-    authorized = bool(WEBHOOK_SECRET_TOKEN) and hmac.compare_digest(
+    authorized = hmac.compare_digest(
         request.args.get("token", "").encode("utf-8"),
         WEBHOOK_SECRET_TOKEN.encode("utf-8"),
     )
@@ -224,8 +224,7 @@ def receive_qq_msg():
 
             print(f"💬 [QQ群收到]: {safe_sender} - {raw_msg}")
 
-            bot_ids = {str(data.get("self_id", "")), os.environ.get("BOT_QQ", "")}
-            if sender_qq in bot_ids:
+            if sender_qq == str(data["self_id"]):
                 final_pure_sender = ""
 
                 transformed_text = re.sub(
