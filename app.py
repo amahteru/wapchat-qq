@@ -281,19 +281,21 @@ def upload_image():
         return back_to_upload("没有选择图片。")
 
     try:
-        b64_data = to_jpeg_b64(file.stream, 800, 800, 80)
+        image_bytes = file.read()
+        qq_image = to_jpeg_b64(image_bytes, 800, 800, 80)
+        web_image = to_jpeg_b64(image_bytes, 240, 100000, 70)
 
         username = nickname(account)
         location = get_ip_location(get_real_ip(request))
 
         caption = f"[{location} - {username}]\n"
         qq_msg_id = send_group(
-            [text_seg(caption), {"type": "image", "data": {"file": f"base64://{b64_data}"}}],
+            [text_seg(caption), {"type": "image", "data": {"file": f"base64://{qq_image}"}}],
             timeout=8,
         )
 
-        img_id = hashlib.md5(b64_data.encode("utf-8")).hexdigest()[:16]
-        save_image(img_id, b64_data)
+        img_id = hashlib.md5(web_image.encode("utf-8")).hexdigest()[:16]
+        save_image(img_id, web_image)
 
         add_chat_message(
             "网页",

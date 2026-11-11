@@ -15,12 +15,8 @@
         {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
         <div class="label">当前昵称: {{ saved_username }} (不会改变登录账号)</div>
         <form method="post" action="/rename">
-            <table class="input-row" cellspacing="0" cellpadding="0" border="0">
-                <tr>
-                    <td class="input-cell"><input type="text" name="new_name" maxlength="12" /></td>
-                    <td class="button-cell"><input type="submit" value="保存" /></td>
-                </tr>
-            </table>
+            <input type="text" name="new_name" size="12" maxlength="12" />
+            <input type="submit" value="保存" />
         </form>
     </div>
 {% endblock %}

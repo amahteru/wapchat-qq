@@ -138,11 +138,7 @@ def load_qq_faces():
 QQ_FACES = load_qq_faces()
 
 
-KAOMOJI_LIST = list(
-    dict.fromkeys(
-        line.split("\t")[0] for line in read_data_lines("all_output_result_kmj.txt")
-    )
-)
+KAOMOJI_LIST = read_data_lines("all_output_result_kmj.txt")
 
 
 BANNED_WORDS = read_data_lines("sensitive_words.txt")
@@ -180,8 +176,8 @@ def cleanup_old_images():
         print(f"图床自动清理失败: {e}")
 
 
-def to_jpeg_b64(source, max_width, max_height, quality):
-    img = Image.open(source).convert("RGB")
+def to_jpeg_b64(data, max_width, max_height, quality):
+    img = Image.open(io.BytesIO(data)).convert("RGB")
     img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
 
     img_io = io.BytesIO()

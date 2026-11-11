@@ -1,7 +1,6 @@
 import hashlib
 import hmac
 import html
-import io
 import json
 import os
 import re
@@ -86,7 +85,7 @@ def receive_qq_msg():
                         try:
                             resp = requests.get(img_url, timeout=5)
                             resp.raise_for_status()
-                            save_image(img_id, to_jpeg_b64(io.BytesIO(resp.content), 240, 100000, 70))
+                            save_image(img_id, to_jpeg_b64(resp.content, 240, 100000, 70))
                             saved = True
                         except Exception as e:
                             print(f"保存群图片失败: {e}")
