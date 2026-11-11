@@ -3,7 +3,6 @@ import datetime
 import hashlib
 import hmac
 import html
-import json
 import re
 import time
 import urllib.parse
@@ -12,7 +11,6 @@ import uuid
 from flask import (
     Flask,
     request,
-    jsonify,
     flash,
     get_flashed_messages,
     render_template,
@@ -71,12 +69,7 @@ app.config["COMPRESS_ALGORITHM"] = "gzip"
 app.config["COMPRESS_MIN_SIZE"] = 100
 
 
-app.config["COMPRESS_MIMETYPES"] = [
-    "text/html",
-    "application/json",
-    "text/css",
-    "application/javascript",
-]
+app.config["COMPRESS_MIMETYPES"] = ["text/html"]
 
 
 Compress(app)
@@ -91,14 +84,25 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.secret_key = SECRET_KEY
 
 
+MESSAGES_PER_PAGE = 10
+
+
 @app.context_processor
 def inject_theme():
     return {"theme": request.cookies.get("nokia_theme", "light")}
 
 
-def upload_result(status, msg=""):
-    safe_msg = json.dumps(str(msg)).replace("<", "&lt;")
-    return f'<script type="text/javascript">/* <![CDATA[ */window.parent.uploadCallback("{status}", {safe_msg});/* ]]> */</script>'
+def take_notice():
+    return next(iter(get_flashed_messages()), None)
+
+
+def send_and_redirect(account, message):
+    session.pop("draft", None)
+    notice = send_web_message(account, message, request)
+    if notice:
+        flash(notice)
+        session["draft"] = message
+    return redirect(url_for("index"))
 
 
 def wml_response(raw_content):
@@ -140,7 +144,7 @@ def view_history():
     if not get_active_account():
         return redirect(url_for("login_page"))
 
-    per_page = 25
+    per_page = MESSAGES_PER_PAGE
     q = request.args.get("q", "").strip()
     query = search_query(q, "pure_text", "pure_sender")
     page, total_pages, skip = paginate(chat_collection.count_documents(query), per_page)
@@ -177,24 +181,30 @@ def view_online_users():
     return render_template("online.html", users=active_users)
 
 
-@app.route("/emojis", methods=["GET"])
+EMOJIS_PER_PAGE = 30
+
+
+@app.route("/emojis", methods=["GET", "POST"])
 def view_emojis():
-    if not get_active_account():
+    account = get_active_account()
+    if not account:
         return redirect(url_for("login_page"))
 
-    try:
-        per_page = min(max(int(request.cookies.get("emoji_limit", 40)), 1), 500)
-    except ValueError:
-        per_page = 40
+    if request.method == "POST":
+        message = request.form.get("message", "")
+        if "add" in request.form:
+            session["draft"] = message + request.form["add"]
+            return redirect(url_for("view_emojis", page=request.args.get("page", 1, type=int)))
+        return send_and_redirect(account, message)
 
-    page, total_pages, skip = paginate(len(KAOMOJI_LIST), per_page)
-    emojis = [
-        {"raw": k, "encoded": urllib.parse.quote(k)}
-        for k in KAOMOJI_LIST[skip : skip + per_page]
-    ]
-
+    page, total_pages, skip = paginate(len(KAOMOJI_LIST), EMOJIS_PER_PAGE)
     return render_template(
-        "emojis.html", emojis=emojis, page=page, total_pages=total_pages
+        "emojis.html",
+        emojis=KAOMOJI_LIST[skip : skip + EMOJIS_PER_PAGE],
+        page=page,
+        total_pages=total_pages,
+        draft=session.get("draft", ""),
+        notice=take_notice(),
     )
 
 
@@ -213,28 +223,51 @@ def toggle_theme():
     return resp
 
 
-@app.route("/api/change_name", methods=["POST"])
-def change_name_api():
+@app.route("/menu")
+def menu_page():
+    if not get_active_account():
+        return redirect(url_for("login_page"))
+    return render_template("menu.html")
+
+
+@app.route("/rename", methods=["GET", "POST"])
+def rename_page():
     account = get_active_account()
     if not account:
-        return jsonify({"status": "error", "msg": "登录已失效，请重新登录。"})
+        return redirect(url_for("login_page"))
 
-    data = request.get_json(silent=True) or {}
-    new_name, error = set_nickname(account, str(data.get("new_name", "")))
-    if error:
-        return jsonify({"status": "error", "msg": error})
-    return jsonify({"status": "ok", "new_name": new_name})
+    if request.method == "POST":
+        new_name, error = set_nickname(account, request.form.get("new_name", ""))
+        if error:
+            flash(error)
+            return redirect(url_for("rename_page"))
+        flash(f"昵称已改为 {new_name}。")
+        return redirect(url_for("index"))
+
+    return render_template("rename.html", saved_username=nickname(account), notice=take_notice())
 
 
-@app.route("/api/upload_image", methods=["POST"])
+@app.route("/upload")
+def upload_page():
+    if not get_active_account():
+        return redirect(url_for("login_page"))
+    return render_template("upload.html", notice=take_notice())
+
+
+def back_to_upload(message):
+    flash(message)
+    return redirect(url_for("upload_page"))
+
+
+@app.route("/upload/image", methods=["POST"])
 def upload_image():
     account = get_active_account()
     if not account:
-        return upload_result("error", "请先登录。")
+        return redirect(url_for("login_page"))
 
     file = request.files.get("image")
     if not file or file.filename == "":
-        return upload_result("error", "没有选择图片。")
+        return back_to_upload("没有选择图片。")
 
     try:
         b64_data = to_jpeg_b64(file.stream, 800, 800, 80)
@@ -253,35 +286,35 @@ def upload_image():
 
         add_chat_message(
             "网页",
-            f"[网页-{html.escape(location)}]{html.escape(username)}: [图片] <a href='/view_image?b64={img_id}' target='_blank' class='action-at'>[查看]</a>",
+            f"[网页-{html.escape(location)}]{html.escape(username)}: [图片] <a href='/view_image?b64={img_id}' class='action-at'>[查看]</a>",
             username,
             "[图片]",
             qq_msg_id=qq_msg_id,
         )
-
-        return upload_result("ok")
-
     except Exception as e:
         print(f"上传图片失败: {e}")
-        return upload_result("error", "图片发送失败，请稍后再试。")
+        return back_to_upload("图片发送失败，请稍后再试。")
+
+    flash("图片已发送。")
+    return redirect(url_for("index"))
 
 
-@app.route("/api/upload_file", methods=["POST"])
+@app.route("/upload/file", methods=["POST"])
 def upload_file():
     account = get_active_account()
     if not account:
-        return upload_result("error", "请先登录。")
+        return redirect(url_for("login_page"))
 
     file = request.files.get("file")
     if not file or file.filename == "":
-        return upload_result("error", "没有选择文件。")
+        return back_to_upload("没有选择文件。")
+
+    filename = file.filename
+    file_bytes = file.read()
+    if not file_bytes:
+        return back_to_upload("不能发送空文件。")
 
     try:
-        filename = file.filename
-        file_bytes = file.read()
-        if not file_bytes:
-            return upload_result("error", "不能发送空文件。")
-
         username = nickname(account)
         location = get_ip_location(get_real_ip(request))
         file_id = str(uuid.uuid4())
@@ -313,17 +346,17 @@ def upload_file():
 
         add_chat_message(
             "网页",
-            f"[网页-{html.escape(location)}]{html.escape(username)}: <span style='color:#008800;'>[文件: {html.escape(filename)}]</span> <a href='/api/download_file?id={file_id}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>",
+            f"[网页-{html.escape(location)}]{html.escape(username)}: <span style='color:#009900;'>[文件: {html.escape(filename)}]</span> <a href='/api/download_file?id={file_id}'>[下载]</a>",
             username,
             f"[文件: {filename}]",
             qq_msg_id=qq_msg_id,
         )
-
-        return upload_result("ok")
-
     except Exception as e:
         print(f"上传文件失败: {e}")
-        return upload_result("error", "文件发送失败，请稍后再试。")
+        return back_to_upload("文件发送失败，请稍后再试。")
+
+    flash("文件已发送。")
+    return redirect(url_for("index"))
 
 
 @app.route("/drive", methods=["GET"])
@@ -415,12 +448,12 @@ def wml_index():
     if not account:
         return redirect("/wml/login")
 
-    notice = next(iter(get_flashed_messages()), None)
+    notice = take_notice()
     if request.method == "POST":
         notice = send_web_message(account, request.form.get("message", ""), request)
 
     wml_history = []
-    for m in chat_history[-20:]:
+    for m in chat_history[-MESSAGES_PER_PAGE:]:
         wml_msg = dict(m)
         clean_text = re.sub(
             r'<a href=([\'"])([^\'"]+)\1[^>]*>(.*?)</a>',
@@ -456,73 +489,31 @@ def wml_rename():
     return redirect("/wml/")
 
 
-@app.route("/", methods=["GET"])
+@app.route("/", methods=["GET", "POST"])
 def index():
     account = get_active_account()
     if not account:
         return redirect(url_for("login_page"))
 
+    if request.method == "POST":
+        return send_and_redirect(account, request.form.get("message", ""))
+
     online_sessions[account] = time.time()
+
+    draft = session.pop("draft", "")
+    reply_id = request.args.get("reply", type=int)
+    target = next((m for m in chat_history if m["id"] == reply_id), None)
+    if target:
+        draft = f"[回复:{target['id']}] [@{target['pure_sender']}] "
+    elif request.args.get("at"):
+        draft = f"[@{request.args['at']}] "
 
     return render_template(
         "chat.html",
-        history=chat_history[-25:],
-        last_id=chat_history[-1]["id"] if chat_history else 0,
-        saved_username=nickname(account),
+        history=chat_history[-MESSAGES_PER_PAGE:],
         online_count=get_online_count(),
-    )
-
-
-@app.route("/api/sync", methods=["POST"])
-def handle_nokia_ajax():
-    data = request.get_json(silent=True) or {}
-    try:
-        client_last_id = int(data.get("last_id", 0))
-    except (TypeError, ValueError):
-        client_last_id = 0
-
-    account = get_active_account()
-    if not account:
-        return jsonify(
-            {
-                "messages": [
-                    {
-                        "sender_title": "系统",
-                        "text": "登录已失效，请重新登录。",
-                    }
-                ],
-                "last_id": client_last_id,
-            }
-        )
-
-    online_sessions[account] = time.time()
-
-    intercept_msg = send_web_message(account, str(data.get("message", "")), request)
-
-    response_msgs = []
-    if intercept_msg:
-        response_msgs.append({"sender_title": "系统", "text": intercept_msg})
-
-    for m in chat_history:
-        if m["id"] <= client_last_id:
-            continue
-        msg_dict = {
-            "id": m["id"],
-            "sender_title": m["sender_title"],
-            "text": m["text"],
-            "pure_sender": m["pure_sender"],
-        }
-        if "recall_target_id" in m:
-            msg_dict["recall_target_id"] = m["recall_target_id"]
-
-        response_msgs.append(msg_dict)
-
-    return jsonify(
-        {
-            "messages": response_msgs,
-            "last_id": chat_history[-1]["id"] if chat_history else client_last_id,
-            "online_count": get_online_count(),
-        }
+        draft=draft,
+        notice=take_notice(),
     )
 
 

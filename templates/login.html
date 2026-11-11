@@ -1,18 +1,18 @@
 {% extends "base.html" %}
 {% block title %}登录{% endblock %}
 {% block css %}
-        .content { width: 95%; margin: 3px auto; }
-        .notice { color: #d00; font-size: 12px; margin: 0 0 1px 0; font-weight: bold; line-height: 1.1; }
-        label { font-size: 12px; font-weight: bold; display: block; margin-top: 2px; margin-bottom: 2px; }
-        input[type="text"], input[type="password"] { width: 100%; height: 27px; border: 1px solid #000; margin: 0 0 5px 0; padding: 2px 5px; font-size: 13px; display: block; border-radius: 0; }
-        input[type="submit"] { width: 100%; height: 27px; border: 1px solid #000; background-color: #dddddd; color: #000; font-weight: bold; font-size: 13px; margin-top: 8px; cursor: pointer; display: block; border-radius: 0; -webkit-appearance: none; }
+        .content { padding: 0.2em; }
+        .notice { color: #cc0000; font-size: medium; margin: 0 0 1px 0; font-weight: bold; line-height: 1.1; }
+        label { font-size: small; font-weight: bold; display: block; margin-top: 2px; margin-bottom: 2px; }
+        input[type="text"], input[type="password"] { width: 100%; height: 23px; border: 1px solid #000; margin: 0 0 0.3em 0; padding: 1px 2px; font-size: medium; display: block; border-radius: 0; }
+        input[type="submit"] { width: 100%; height: 27px; border: 1px solid #000; background-color: #cccccc; color: #000; font-weight: bold; font-size: medium; margin-top: 0.3em; cursor: pointer; display: block; border-radius: 0; -webkit-appearance: none; }
         input[type="submit"]:active { background-color: #999999; color: #fff; }
 {% endblock %}
 {% block body %}
     <h2>WapChat QQ</h2>
     <div class="content">
         {% if error %}<div class="notice">{{ error }}</div>{% endif %}
-        {% if success %}<div class="notice" style="color: green;">{{ success }}</div>{% endif %}
+        {% if success %}<div class="notice" style="color: #009900;">{{ success }}</div>{% endif %}
         <form method="POST" action="/login">
             <label>账号(字母/数字/下划线):</label>
             <input type="text" name="account" required="required" spellcheck="false" autocapitalize="off" autocomplete="off" />

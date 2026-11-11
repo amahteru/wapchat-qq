@@ -6,15 +6,15 @@
 {% endmacro %}
 
 {% macro search_bar(action, q, placeholder) %}
-    <div class="search-bar" style="width: 95%; margin: 2px auto;">
+    <div class="search-bar" style="padding: 0.2em;">
         <form action="{{ action }}" method="GET" style="margin:0; padding:0;">
             <table style="width: 100%;" cellspacing="0" cellpadding="0" border="0">
                 <tr>
                     <td style="width: 75%; padding-right: 2px;">
-                        <input type="text" name="q" value="{{ q }}" placeholder="{{ placeholder }}" style="width: 100%; height: 22px; border: 1px solid #000; font-size: 12px; margin: 0; border-radius: 0;" />
+                        <input type="text" name="q" value="{{ q }}" placeholder="{{ placeholder }}" style="width: 100%; height: 18px; padding: 1px 2px; border: 1px solid #000; font-size: small; margin: 0; border-radius: 0;" />
                     </td>
                     <td style="width: 25%;">
-                        <input type="submit" value="搜索" style="width: 100%; height: 22px; border: 1px solid #000; background-color: #eee; font-size: 12px; margin: 0; cursor: pointer; border-radius: 0; -webkit-appearance: none;" />
+                        <input type="submit" value="搜索" style="width: 100%; height: 22px; border: 1px solid #000; background-color: #cccccc; font-size: small; margin: 0; cursor: pointer; border-radius: 0; -webkit-appearance: none;" />
                     </td>
                 </tr>
             </table>
@@ -32,11 +32,11 @@
             {% if q %}
             <input type="hidden" name="q" value="{{ q }}" />
             {% endif %}
-            <input type="text" name="page" value="{{ page }}" style="width:28px; height:22px; text-align:center; padding:0; margin:0; border:1px solid #999; font-size:12px; font-family:sans-serif; vertical-align:middle; border-radius:0; -webkit-appearance:none;" />
+            <input type="text" name="page" value="{{ page }}" style="width:28px; height:20px; text-align:center; padding:0; margin:0; border:1px solid #999; font-size:small; vertical-align:middle; border-radius:0; -webkit-appearance:none;" />
 
-            <span style="display:inline-block; vertical-align:middle; font-size:12px; font-family:sans-serif; font-weight:normal;"> / {{ total_pages }}</span>
+            <span style="display:inline-block; vertical-align:middle; font-size:small; font-weight:normal;"> / {{ total_pages }}</span>
 
-            <input type="submit" value="跳" style="height:22px; border:1px solid #999; background:#eee; padding:0 5px; margin:0 0 0 2px; font-size:12px; vertical-align:middle; cursor:pointer; border-radius:0; -webkit-appearance:none;" />
+            <input type="submit" value="跳" style="height:22px; border:1px solid #999; background:#cccccc; padding:0 5px; margin:0 0 0 2px; font-size:small; vertical-align:middle; cursor:pointer; border-radius:0; -webkit-appearance:none;" />
         </form>
 
         {% if page < total_pages %}
@@ -46,41 +46,54 @@
 {% endmacro %}
 
 {% macro pager_css() %}
-        .nav { padding: 10px; text-align: center; font-size: 13px; font-weight: bold; }
-        .nav a { color: blue; text-decoration: none; padding: 0 5px; border: 1px solid #ccc; background: #eee; margin: 0 2px; display: inline-block; height: 22px; line-height: 20px; vertical-align: middle; }
+        .nav { padding: 0.3em; text-align: center; font-size: small; font-weight: bold; }
+        .nav a { color: #0000ff; text-decoration: none; padding: 0 5px; border: 1px solid #ccc; background: #cccccc; margin: 0 2px; display: inline-block; height: 22px; line-height: 20px; vertical-align: middle; }
 {% endmacro %}
 
 {% macro pager_dark_css() %}
-        .nav a { background: #333333 !important; border-color: #555555 !important; }
+        .nav a { background: #333333 !important; border-color: #333333 !important; }
 {% endmacro %}
 
 {% macro msg_css() %}
-        .msg { margin-bottom: 4px; border-bottom: 1px dashed #cccccc; padding: 0 0 4px 0; font-size: 12px; line-height: 1.3; word-wrap: break-word; color: #333333; }
-        .action-at { color: blue; text-decoration: none; }
+        .msg { border-bottom: 1px dashed #cccccc; padding: 0.2em 0; font-size: medium; line-height: 1.3; word-wrap: break-word; color: #333333; }
+        .action-at { color: #0000ff; text-decoration: none; }
         .action-reply { color: #ff6600; text-decoration: none; }
-        .reply-text { color: #ff6600; font-size: 11px; }
+        .reply-text { color: #ff6600; font-size: small; }
+        .msg-title { font-size: small; }
 {% endmacro %}
 
 {% macro msg_dark_css() %}
-        .msg { border-bottom: 1px dashed #333333 !important; color: #888888 !important; }
+        .msg { border-bottom: 1px dashed #333333 !important; color: #999999 !important; }
 {% endmacro %}
 
 {% macro item_css() %}
-        .item { margin-bottom: 4px; border-bottom: 1px dashed #cccccc; padding: 4px 0; font-size: 13px; line-height: 1.3; word-wrap: break-word; }
+        .item { border-bottom: 1px dashed #cccccc; padding: 0.3em 0; font-size: medium; line-height: 1.3; word-wrap: break-word; }
         .item-title { font-weight: bold; color: #000000; }
-        .item-meta { font-size: 11px; color: #666666; }
+        .item-meta { font-size: small; color: #666666; }
 {% endmacro %}
 
 {% macro item_dark_css() %}
         .item { border-bottom: 1px dashed #333333 !important; }
-        .item-title { color: #dddddd !important; }
-        .item-meta { color: #888888 !important; }
+        .item-title { color: #cccccc !important; }
+        .item-meta { color: #999999 !important; }
 {% endmacro %}
 
-{% macro get_cookie_js() %}
-        function getCookie(name) {
-            var arr, reg = new RegExp("(^| )" + name + "=([^;]*)(;|$)");
-            if (arr = document.cookie.match(reg)) return decodeURIComponent(arr[2]);
-            else return "";
-        }
+{% macro form_css() %}
+        .input-area { padding: 0.2em; background-color: #ffffff; border-bottom: 2px solid #000; }
+        .input-row { width: 100%; }
+        .input-cell { padding-right: 0.3em; }
+        .button-cell { width: 48px; }
+        .input-area input[type="text"] { width: 100%; height: 21px; border: 1px solid #000; padding: 1px 2px; font-size: medium; border-radius: 0; }
+        .input-area input[type="submit"], .input-area input[type="file"] { height: 25px; border: 1px solid #000; background-color: #cccccc; color: #000; font-weight: bold; font-size: medium; border-radius: 0; -webkit-appearance: none; }
+        .input-area input[type="submit"] { width: 48px; }
+        .notice { color: #ff6600; font-size: medium; font-weight: bold; margin-bottom: 0.2em; }
+        .links { font-size: medium; margin-top: 0.2em; }
+        .links a { color: #0000ff; text-decoration: none; margin-right: 0.3em; }
+        .links.bottom { padding: 0.2em; }
+        .online { font-size: medium; font-weight: normal; color: #009900; }
+{% endmacro %}
+
+{% macro form_dark_css() %}
+        .input-area { background-color: #000000 !important; border-bottom: 2px solid #333333 !important; }
+        .notice { color: #ff9933 !important; }
 {% endmacro %}

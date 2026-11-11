@@ -36,7 +36,7 @@ from sending import highlight_mentions
 
 WEBHOOK_SECRET_TOKEN = os.environ["WEBHOOK_TOKEN"]
 RECALLED_TEXT = "[消息已撤回]"
-RECALLED_HTML = f'<span style="color:#999; font-size:12px;"><i>{RECALLED_TEXT}</i></span>'
+RECALLED_HTML = f'<span style="color:#666666; font-size:small;"><i>{RECALLED_TEXT}</i></span>'
 
 
 def format_duration(seconds):
@@ -197,7 +197,7 @@ def receive_qq_msg():
 
             safe_text = re.sub(
                 r"\{IMG:([A-Za-z0-9_-]+)\}",
-                r'<a href="/view_image?b64=\1" target="_blank" class="action-at">[查看]</a>',
+                r'<a href="/view_image?b64=\1" class="action-at">[查看]</a>',
                 safe_text,
             )
             safe_text = highlight_mentions(safe_text)
@@ -227,7 +227,6 @@ def receive_qq_msg():
         operator_qq = str(data.get("operator_id", ""))
 
         sys_msg_text = ""
-        recalled_local_id = None
 
         if notice_type == "notify" and sub_type == "poke":
             sender_name = get_qq_name(user_qq)
@@ -257,7 +256,6 @@ def receive_qq_msg():
 
                 for m in chat_history:
                     if m.get("qq_msg_id") == recalled_qq_msg_id:
-                        recalled_local_id = m["id"]
                         m["text"] = RECALLED_HTML
                         m["pure_text"] = RECALLED_TEXT
                         break
@@ -288,9 +286,9 @@ def receive_qq_msg():
                 encoded_url = urllib.parse.quote(file_url, safe="")
                 encoded_name = urllib.parse.quote(file_name)
                 proxy_url = f"/api/download_qq_file?name={encoded_name}&url={encoded_url}&sig={sign_url(file_url)}"
-                file_html = f"<span style='color:#008800;'>[文件: {safe_filename}]</span> <a href='{proxy_url}' target='_blank' style='color: blue; text-decoration:underline;'>[下载]</a>"
+                file_html = f"<span style='color:#009900;'>[文件: {safe_filename}]</span> <a href='{proxy_url}'>[下载]</a>"
             else:
-                file_html = f"<span style='color:#008800;'>[文件: {safe_filename}]</span> <span style='color:#999; font-size:11px;'>(无法获取下载链接)</span>"
+                file_html = f"<span style='color:#009900;'>[文件: {safe_filename}]</span> <span style='color:#666666; font-size:small;'>(无法获取下载链接)</span>"
 
             add_chat_message(
                 "QQ群",
@@ -314,17 +312,11 @@ def receive_qq_msg():
 
         if sys_msg_text:
             print(f"[系统事件]: {sys_msg_text}")
-
-            extra = {}
-            if notice_type == "group_recall" and recalled_local_id is not None:
-                extra["recall_target_id"] = recalled_local_id
-
             add_chat_message(
                 "系统",
-                f'<span style="color:#ff6600; font-size:12px;">{html.escape(sys_msg_text)}</span>',
-                "系统",
+                f'<span style="color:#ff6600; font-size:small;">{html.escape(sys_msg_text)}</span>',
+                "",
                 sys_msg_text,
-                **extra,
             )
 
     return jsonify({"status": "ok"})

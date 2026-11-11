@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}菜单{% endblock %}
+{% block css %}
+{{ ui.item_css() }}
+        .item a { text-decoration: none; display: block; }
+{% endblock %}
+{% block dark_css %}
+{{ ui.item_dark_css() }}
+{% endblock %}
+{% block body %}
+{{ ui.header("菜单") }}
+
+    <div class="panel">
+        <div class="item"><a href="/history" style="color:#ff6600;">历史记录</a></div>
+        <div class="item"><a href="/drive" style="color:#009900;">群网盘</a></div>
+        <div class="item"><a href="/online" style="color:#009999;">在线用户</a></div>
+        <div class="item"><a href="/rename">修改昵称</a></div>
+        <div class="item"><a href="/toggle_theme" style="color:#666666;">{% if theme == 'dark' %}日间模式{% else %}夜间模式{% endif %}</a></div>
+        <div class="item"><a href="/logout" style="color:red;">退出登录</a></div>
+    </div>
+{% endblock %}

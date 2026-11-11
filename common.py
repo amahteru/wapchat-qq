@@ -224,7 +224,7 @@ APP_START_TIME = int(time.time())
 online_sessions = {}
 
 
-ONLINE_TIMEOUT = 30
+ONLINE_TIMEOUT = 300
 
 
 def get_online_count():

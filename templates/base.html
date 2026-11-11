@@ -7,19 +7,19 @@
     <title>{% block title %}WapChat QQ{% endblock %}</title>
     <style type="text/css">
 /* <![CDATA[ */
-        * { -webkit-box-sizing: border-box; -moz-box-sizing: border-box; box-sizing: border-box; }
-        body { margin: 0; padding: 0; background-color: #ffffff; color: #000000; font-family: sans-serif; font-size: 13px; }
-        h2 { font-size: 14px; margin: 0; padding: 2px 6px; border-bottom: 2px solid #000; background-color: #f5f5f5; line-height: 18px; }
+        body { margin: 0; padding: 0; background-color: #ffffff; color: #000000; font-size: medium; }
+        h2 { font-size: medium; margin: 0; padding: 2px 0.2em; border-bottom: 2px solid #000; background-color: #ffffff; line-height: 1.3; }
         .back { float: right; }
-        .back a { font-size: 12px; font-weight: normal; color: red; text-decoration: none; }
-        .panel { padding: 6px; }
+        .back a { font-size: medium; font-weight: normal; color: red; text-decoration: none; }
+        .panel { padding: 0.2em; }
+        a { color: #0000ff; }
 {% block css %}{% endblock %}
 {% if theme == 'dark' %}
-        html, body { background-color: #000000 !important; color: #aaaaaa !important; }
-        h2 { border-bottom: 2px solid #555555 !important; background-color: #111111 !important; color: #dddddd !important; }
-        .panel { background: #111111 !important; }
-        input[type="text"], input[type="password"] { background-color: #111111 !important; color: #ffffff !important; border-color: #555555 !important; }
-        input[type="button"], input[type="submit"] { background-color: #333333 !important; color: #dddddd !important; border-color: #555555 !important; }
+        html, body { background-color: #000000 !important; color: #999999 !important; }
+        h2 { border-bottom: 2px solid #333333 !important; background-color: #000000 !important; color: #cccccc !important; }
+        .panel { background: #000000 !important; }
+        input[type="text"], input[type="password"] { background-color: #000000 !important; color: #ffffff !important; border-color: #333333 !important; }
+        input[type="button"], input[type="submit"] { background-color: #333333 !important; color: #cccccc !important; border-color: #333333 !important; }
 {% block dark_css %}{% endblock %}
 {% endif %}
     /* ]]> */

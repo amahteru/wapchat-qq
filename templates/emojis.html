@@ -2,34 +2,34 @@
 {% import "_macros.html" as ui %}
 {% block title %}颜文字{% endblock %}
 {% block css %}
-        .kmj-btn { display: inline-block; padding: 3px 5px; margin: 3px; border: 1px solid #999; background: #eee; text-decoration: none; color: #000; font-size: 12px; line-height: 1.2; }
-        .kmj-btn:active { background: #ccc; }
+{{ ui.form_css() }}
+        .kmj-list { padding: 0.2em; text-align: center; }
+        .kmj-list input { margin: 2px; padding: 2px 4px; border: 1px solid #999; background: #cccccc; color: #000; font-size: small; border-radius: 0; -webkit-appearance: none; }
 {{ ui.pager_css() }}
 {% endblock %}
 {% block dark_css %}
-        .kmj-btn { border: 1px solid #555; background: #333; color: #ddd; }
-        .kmj-btn:active { background: #555; }
+{{ ui.form_dark_css() }}
+        .kmj-list input { border-color: #333333 !important; background: #333 !important; color: #cccccc !important; }
 {{ ui.pager_dark_css() }}
 {% endblock %}
 {% block body %}
 {{ ui.header("颜文字 (" ~ page ~ "/" ~ total_pages ~ ")") }}
 
-    <div class="panel" style="text-align: center;">
-        {% for kmj in emojis %}
-            <a href="javascript:selectEmoji('{{ kmj.encoded }}');" class="kmj-btn">{{ kmj.raw }}</a>
-        {% endfor %}
-    </div>
+    <form method="post" action="/emojis?page={{ page }}">
+        <div class="input-area">
+            {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
+            <table class="input-row" cellspacing="0" cellpadding="0" border="0">
+                <tr>
+                    <td class="input-cell"><input type="text" name="message" value="{{ draft }}" maxlength="200" /></td>
+                    <td class="button-cell"><input type="submit" name="send" value="发送" /></td>
+                </tr>
+            </table>
+            <div class="links">点颜文字加到输入框，可以连续加几个再发送。</div>
+        </div>
+        <div class="kmj-list">
+            {% for kmj in emojis %}<input type="submit" name="add" value="{{ kmj }}" />{% endfor %}
+        </div>
+    </form>
 
 {{ ui.pager("/emojis", page, total_pages) }}
-
-    <script type="text/javascript">
-/* <![CDATA[ */
-{{ ui.get_cookie_js() }}
-        function selectEmoji(encodedEmoji) {
-            var draft = getCookie("nokia_draft") + decodeURIComponent(encodedEmoji);
-            document.cookie = "nokia_draft=" + encodeURIComponent(draft) + "; path=/";
-            window.location.href = "/";
-        }
-    /* ]]> */
-    </script>
 {% endblock %}

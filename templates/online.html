@@ -16,10 +16,9 @@
         {% else %}
             {% for u in users %}
             <div class="item">
-                <span style="color:green;">●</span>
                 <span class="item-title">{{ u.nickname }}</span>
                 <span class="item-meta">({{ u.account }})</span>
-                {% if u.is_me %} <span style="font-size:11px; color:blue;">[我]</span> {% endif %}
+                {% if u.is_me %} <span class="action-at" style="font-size:small;">[我]</span> {% endif %}
             </div>
             {% endfor %}
         {% endif %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}上传{% endblock %}
+{% block css %}
+{{ ui.form_css() }}
+        .input-area { border-bottom: 1px dashed #999; }
+        .label { font-size: small; font-weight: bold; margin-bottom: 3px; }
+        .input-area input[type="file"] { display: block; width: 100%; margin-bottom: 0.2em; background-color: #ffffff; font-weight: normal; }
+        .input-area input[type="submit"] { width: auto; padding: 0 8px; }
+        .tip { font-size: small; color: #666666; padding: 0.2em; }
+{% endblock %}
+{% block dark_css %}
+{{ ui.form_dark_css() }}
+        .input-area input[type="file"] { background-color: #000000 !important; color: #cccccc !important; }
+{% endblock %}
+{% block body %}
+{{ ui.header("上传") }}
+
+    <div class="input-area">
+        {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
+        <form method="post" action="/upload/image" enctype="multipart/form-data">
+            <div class="label">发图片:</div>
+            <input type="file" name="image" accept="image/*" />
+            <input type="submit" value="发送图片" />
+        </form>
+    </div>
+
+    <div class="input-area">
+        <form method="post" action="/upload/file" enctype="multipart/form-data">
+            <div class="label">发文件 (最大15MB):</div>
+            <input type="file" name="file" />
+            <input type="submit" value="发送文件" />
+        </form>
+    </div>
+
+    <div class="tip">部分老手机的浏览器不支持上传文件，选不了文件时请换浏览器。</div>
+{% endblock %}

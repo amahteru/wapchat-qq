@@ -1,365 +1,52 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
 {% block css %}
-        #chat { padding: 6px; }
+        #chat { padding: 0 0.2em; }
 {{ ui.msg_css() }}
-        .input-area { padding: 6px; background-color: #f5f5f5; border-bottom: 2px solid #000; }
-        .input-area td { vertical-align: middle; }
-        #userInput, #sendBtn, #attachBtn { width: 100%; height: 27px; border: 1px solid #000; font-size: 13px; display: block; border-radius: 0; }
-        #userInput { padding: 2px 5px; vertical-align: middle; }
-        #sendBtn, #attachBtn { color: #000; font-weight: bold; -webkit-appearance: none; }
-        #sendBtn { background-color: #dddddd; vertical-align: middle; cursor: pointer; }
-        #sendBtn:active { background-color: #999999; color: #fff; }
-        #attachBtn { background-color: #eee; padding: 0; margin: 0; }
-        .nav-links { float: right; font-size: 12px; font-weight: normal; }
-        .nav-links a { color: blue; text-decoration: none; margin-left: 8px; }
-        .menu { display: none; position: absolute; width: 50px; background: #fafafa; border: 1px solid #000; padding: 0; z-index: 999; text-align: center; }
-        .menu a, .menu-label { display: block; font-size: 12px; text-decoration: none; padding: 3px 0; margin: 0; }
-        #optionsMenu { top: 30px; right: 6px; }
-        #optionsMenu a { border-bottom: 1px solid #000; }
-        #optionsMenu a.last { border-bottom: 0; }
-        #attachMenu { top: 65px; left: 0; }
-        .menu-row { position: relative; width: 100%; border-bottom: 1px solid #000; overflow: hidden; }
-        .menu-row form, .menu-row input { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-        .menu-row form { margin: 0; padding: 0; }
-        .menu-row input { opacity: 0.01; filter: alpha(opacity=1); cursor: pointer; font-size: 50px; outline: none; }
+{{ ui.form_css() }}
+        .msg-title { overflow: hidden; margin-bottom: 2px; }
+        .msg-title b { float: left; }
+        .msg-actions { float: right; }
 {% endblock %}
 {% block dark_css %}
 {{ ui.msg_dark_css() }}
-        .input-area { background-color: #111111 !important; border-bottom: 2px solid #555555 !important; }
-        #userInput { background-color: #222222 !important; }
-        .menu { background: #111111 !important; border-color: #555555 !important; }
-        #optionsMenu a, .menu-row { border-bottom-color: #555555 !important; }
-        #attachMenu { color: #dddddd !important; }
+{{ ui.form_dark_css() }}
 {% endblock %}
 {% block body %}
-    <h2>
-        <span class="nav-links">
-            <a id="optionsBtn" href="javascript:toggleOptionsMenu();">[选项▼]</a>
-        </span>
-        WapChat QQ
-        <a id="onlineCount" href="/online" style="font-size:12px; font-weight:normal; color:green; text-decoration:underline;">({{ online_count }}在线)</a>
+    <h2>WapChat QQ <a href="/online" class="online">({{ online_count }}在线)</a>
+        <span class="back"><a href="/menu">[菜单]</a></span>
     </h2>
 
-    <div id="optionsMenu" class="menu">
-        <a href="/toggle_theme" style="color:#888;">{% if theme == 'dark' %}日间{% else %}夜间{% endif %}</a>
-        <a href="/history" style="color:#ff6600;">历史</a>
-        <a href="/drive" style="color:green;">网盘</a>
-        <a href="javascript:changeName(); toggleOptionsMenu();" style="color:blue;">改名</a>
-        <a href="/logout" class="last" style="color:red;">退出</a>
-    </div>
-
-    <div id="attachMenu" class="menu">
-        <div class="menu-row">
-            <a href="javascript:goToEmoji();" style="color:#ff00ff;">颜文字</a>
-        </div>
-        <div class="menu-row">
-            <div class="menu-label" style="color:blue;">图片</div>
-            <form id="uploadForm" action="/api/upload_image" method="POST" enctype="multipart/form-data" target="uploadTarget">
-                <input type="file" name="image" accept="image/*" onchange="handleAutoUpload('uploadForm', '图片');" />
-            </form>
-        </div>
-        <div class="menu-row">
-            <div class="menu-label" style="color:green;">文件</div>
-            <form id="uploadFileForm" action="/api/upload_file" method="POST" enctype="multipart/form-data" target="uploadTarget">
-                <input type="file" name="file" onchange="handleAutoUpload('uploadFileForm', '文件');" />
-            </form>
-        </div>
-        <iframe id="uploadTarget" name="uploadTarget" style="display:none;"></iframe>
-    </div>
-
     <div class="input-area">
-        <form onsubmit="sendMessage(); return false;">
-            <table style="width: 100%; table-layout: fixed;" cellspacing="0" cellpadding="0" border="0">
+        {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
+        <form method="post" action="/">
+            <table class="input-row" cellspacing="0" cellpadding="0" border="0">
                 <tr>
-                    <td style="width: 66%; padding-right: 2px;">
-                        <input type="text" id="userInput" placeholder="输入消息" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" />
-                    </td>
-                    <td style="width: 10%; padding-right: 2px;">
-                        <input type="button" id="attachBtn" value="▼" onclick="toggleAttachMenu();" />
-                    </td>
-                    <td style="width: 24%;">
-                        <input type="button" id="sendBtn" value="发送" onclick="sendMessage();" />
-                    </td>
+                    <td class="input-cell"><input type="text" name="message" value="{{ draft }}" maxlength="200" /></td>
+                    <td class="button-cell"><input type="submit" value="发送" /></td>
                 </tr>
             </table>
         </form>
+        <div class="links"><a href="/">[刷新]</a> <a href="/upload">[上传]</a> <a href="/emojis">[颜文字]</a></div>
     </div>
 
     <div id="chat">
         {% for msg in history|reverse %}
-        <div class="msg" id="msg_{{ msg.id }}">
-            <div style="overflow:hidden; margin-bottom:2px;">
-                <b style="float:left;">{{ msg.sender_title }}:</b>
+        <div class="msg">
+            <div class="msg-title">
+                <b>{{ msg.sender_title }}:</b>
                 {% if msg.pure_sender %}
-                {% set safe_name = msg.pure_sender | replace("'", "") | replace('"', '') | replace("\\", "") %}
-                <span style="float:right;">
-                    <a href="javascript:atUser('{{ safe_name }}');" class="action-at">[@]</a>
-                    <a href="javascript:replyMsg('{{ msg.id }}', '{{ safe_name }}');" class="action-reply">[回]</a>
+                <span class="msg-actions">
+                    <a href="/?at={{ msg.pure_sender|urlencode }}" class="action-at">[@]</a>
+                    <a href="/?reply={{ msg.id }}" class="action-reply">[回]</a>
                 </span>
                 {% endif %}
             </div>
             <div style="clear:both;">{{ msg.text | safe }}</div>
         </div>
         {% endfor %}
-        <div class="msg"><b>系统:</b><br/>已连接，正在接收群消息。</div>
+        {% if not history %}<div class="msg">暂无消息。</div>{% endif %}
     </div>
 
-    <script type="text/javascript">
-/* <![CDATA[ */
-        if (typeof XMLHttpRequest === "undefined") {
-            window.XMLHttpRequest = function () {
-                try { return new ActiveXObject("Msxml2.XMLHTTP.6.0"); } catch (e) {}
-                try { return new ActiveXObject("Msxml2.XMLHTTP.3.0"); } catch (e) {}
-                try { return new ActiveXObject("Microsoft.XMLHTTP"); } catch (e) {}
-                throw new Error("浏览器不支持，无法收发消息");
-            };
-        }
-        if (!window.JSON) {
-            window.JSON = {
-                parse: function (sJSON) { try { return eval('(' + sJSON + ')'); } catch (e) { return null; } },
-                stringify: function (v) {
-                    var i, s = "", len;
-                    if (v === null) return "null";
-                    if (typeof v === 'number' || typeof v === 'boolean') return v.toString();
-                    if (typeof v === 'string') return '"' + v.replace(/"/g, '\\"') + '"';
-                    if (v instanceof Array) {
-                        len = v.length;
-                        for (i = 0; i < len; i++) { s += (s ? "," : "") + this.stringify(v[i]); }
-                        return "[" + s + "]";
-                    }
-                    if (typeof v === 'object') {
-                        for (i in v) { if (v.hasOwnProperty(i)) { s += (s ? "," : "") + '"' + i + '":' + this.stringify(v[i]); } }
-                        return "{" + s + "}";
-                    }
-                    return "";
-                }
-            };
-        }
-{{ ui.get_cookie_js() }}
-        var chatBox = document.getElementById('chat');
-        var input = document.getElementById('userInput');
-        var sendBtn = document.getElementById('sendBtn');
-        var attachBtn = document.getElementById('attachBtn');
-        var attachMenu = document.getElementById('attachMenu');
-        var myUsername = {{ saved_username | tojson }};
-        var lastMsgId = {{ last_id }};
-
-        var baseInterval = 5000;
-        var maxInterval = 25000;
-        var currentInterval = baseInterval;
-        var pollTimer = null;
-        var isPolling = false;
-
-        function postJSON(url, data, done) {
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', url + '?t=' + new Date().getTime(), true);
-            xhr.setRequestHeader('Content-Type', 'application/json');
-            xhr.onreadystatechange = function () {
-                if (xhr.readyState !== 4) return;
-                var res = null;
-                if (xhr.status === 200) {
-                    try { res = JSON.parse(xhr.responseText); } catch (e) {}
-                }
-                done(xhr.status, res);
-            };
-            xhr.send(JSON.stringify(data));
-        }
-
-        function atUser(name) {
-            if (!name) return;
-            input.value += '[@' + name + '] ';
-            input.focus();
-        }
-        function replyMsg(id, name) {
-            if (!id) return;
-            var val = input.value.replace(/^\[回复:\d+\]\s*/, '');
-            if (name && val.indexOf('[@' + name + ']') === -1) {
-                val = '[@' + name + '] ' + val;
-            }
-            input.value = '[回复:' + id + '] ' + val;
-            input.focus();
-        }
-        function toggleMenu(id) {
-            var menu = document.getElementById(id);
-            menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
-        }
-        function goToEmoji() {
-            document.cookie = "nokia_draft=" + encodeURIComponent(input.value) + "; path=/";
-            var w = window.innerWidth || document.documentElement.clientWidth || document.body.clientWidth || 240;
-            var h = window.innerHeight || document.documentElement.clientHeight || document.body.clientHeight || 320;
-            var limit = Math.floor(Math.floor(w / 80) * Math.floor((h - 90) / 32) * 0.8);
-            if (limit < 8) limit = 8;
-            if (limit > 500) limit = 500;
-            document.cookie = "emoji_limit=" + limit + "; path=/";
-            window.location.href = '/emojis';
-        }
-        var draftText = getCookie('nokia_draft');
-        if (draftText !== "") {
-            input.value = draftText;
-            document.cookie = "nokia_draft=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-            input.focus();
-        }
-        function pageOffset(element, prop) {
-            var total = 0;
-            for (var el = element; el !== null; el = el.offsetParent) total += el[prop];
-            return total;
-        }
-        function placeBelow(menu, anchor) {
-            menu.style.top = (pageOffset(anchor, 'offsetTop') + anchor.offsetHeight + 2) + 'px';
-        }
-        function toggleOptionsMenu() {
-            var menu = document.getElementById('optionsMenu');
-            if (menu.style.display !== 'block') placeBelow(menu, document.getElementById('optionsBtn'));
-            toggleMenu('optionsMenu');
-        }
-        function toggleAttachMenu() {
-            if (attachMenu.style.display !== 'block') {
-                var btnWidth = attachBtn.offsetWidth;
-                var finalWidth = btnWidth < 50 ? 50 : btnWidth;
-                attachMenu.style.width = finalWidth + 'px';
-                attachMenu.style.left = Math.floor(pageOffset(attachBtn, 'offsetLeft') - ((finalWidth - btnWidth) / 2)) + 'px';
-                attachMenu.style.right = 'auto';
-                placeBelow(attachMenu, attachBtn);
-            }
-            toggleMenu('attachMenu');
-        }
-        function handleAutoUpload(formId, typeName) {
-            var form = document.getElementById(formId);
-            if (!form.getElementsByTagName('input')[0].value) return;
-            form.submit();
-            toggleAttachMenu();
-            addMessage('系统', typeName + '正在发送，请稍候。');
-        }
-        function uploadCallback(status, msg) {
-            attachMenu.style.display = 'none';
-            document.getElementById('uploadForm').getElementsByTagName('input')[0].value = '';
-            document.getElementById('uploadFileForm').getElementsByTagName('input')[0].value = '';
-
-            if (status === 'ok') {
-                addMessage('系统', '发送成功。');
-                if (pollTimer) clearTimeout(pollTimer);
-                currentInterval = baseInterval;
-                doPoll();
-            } else {
-                addMessage('系统', '发送失败：' + msg);
-            }
-        }
-        function changeName() {
-            var newName = prompt("输入新昵称（不会改变登录账号）：", myUsername);
-            if (newName === null) return;
-            newName = newName.replace(/^\s+|\s+$/g, '');
-            if (newName === '') {
-                addMessage('系统', '昵称不能为空，已取消修改。');
-                return;
-            }
-            postJSON('/api/change_name', { new_name: newName }, function (status, res) {
-                if (!res) {
-                    addMessage('系统', '网络出错，请稍后重试。');
-                } else if (res.status === 'ok') {
-                    myUsername = res.new_name;
-                    addMessage('系统', '昵称已改为：' + myUsername);
-                } else {
-                    addMessage('系统', '改名失败：' + res.msg);
-                }
-            });
-        }
-
-        function addMessage(sender_title, text, pure_sender, msg_id) {
-            var div = document.createElement('div');
-            div.className = 'msg';
-            if (msg_id !== undefined && msg_id !== null) {
-                div.id = 'msg_' + msg_id;
-            }
-
-            var actionLinks = '';
-            if (pure_sender && msg_id) {
-                var safeName = pure_sender.replace(/['"\\]/g, '');
-                var atLink = '<a href="javascript:atUser(' + "'" + safeName + "'" + ');" class="action-at">[@]</a>';
-                var repLink = '&nbsp;<a href="javascript:replyMsg(' + "'" + msg_id + "'" + ', ' + "'" + safeName + "'" + ');" class="action-reply">[回]</a>';
-                actionLinks = '<span style="float:right;">' + atLink + repLink + '</span>';
-            }
-            div.innerHTML = '<div style="overflow:hidden; margin-bottom:2px;"><b style="float:left;">' + sender_title + ':</b>' + actionLinks + '</div><div style="clear:both;">' + text + '</div>';
-
-            if (chatBox.firstChild) {
-                chatBox.insertBefore(div, chatBox.firstChild);
-            } else {
-                chatBox.appendChild(div);
-            }
-            window.scrollTo(0, 0);
-
-            while (chatBox.children.length > 26) {
-                chatBox.removeChild(chatBox.children[chatBox.children.length - 1]);
-            }
-        }
-
-        function applySync(res) {
-            var hasNewMessage = false;
-            if (res.online_count !== undefined) {
-                document.getElementById('onlineCount').innerHTML = '(' + res.online_count + '在线)';
-            }
-            var messages = res.messages || [];
-            for (var i = 0; i < messages.length; i++) {
-                var m = messages[i];
-                if (m.recall_target_id !== undefined && m.recall_target_id !== null) {
-                    var targetDiv = document.getElementById('msg_' + m.recall_target_id);
-                    if (targetDiv) {
-                        targetDiv.innerHTML = '<div style="color:#999; font-size:12px; margin-bottom:2px;"><i>[消息已撤回]</i></div>';
-                    }
-                }
-                if (m.id === undefined || m.id > lastMsgId) {
-                    addMessage(m.sender_title, m.text, m.pure_sender, m.id);
-                    if (m.id !== undefined) {
-                        lastMsgId = m.id;
-                        hasNewMessage = true;
-                    }
-                }
-            }
-            if (res.last_id !== undefined && res.last_id > lastMsgId) {
-                lastMsgId = res.last_id;
-            }
-            return hasNewMessage;
-        }
-
-        function sendMessage() {
-            var text = input.value;
-            if (text === null || text === '') return;
-
-            input.value = '';
-            sendBtn.disabled = true;
-            sendBtn.value = '发送中';
-
-            currentInterval = baseInterval;
-            if (pollTimer) clearTimeout(pollTimer);
-            pollTimer = setTimeout(doPoll, currentInterval);
-
-            postJSON('/api/sync', { message: text, last_id: lastMsgId }, function (status, res) {
-                sendBtn.disabled = false;
-                sendBtn.value = '发送';
-                if (status !== 200) {
-                    addMessage('系统', '网络出错，请稍后重试。');
-                } else if (!res) {
-                    addMessage('系统', '数据异常，请刷新页面。');
-                } else {
-                    applySync(res);
-                }
-            });
-        }
-
-        function doPoll() {
-            if (isPolling) return;
-            isPolling = true;
-            postJSON('/api/sync', { message: "", last_id: lastMsgId }, function (status, res) {
-                isPolling = false;
-                if (res && applySync(res)) {
-                    currentInterval = baseInterval;
-                } else {
-                    currentInterval = Math.min(currentInterval + 2000, maxInterval);
-                }
-                pollTimer = setTimeout(doPoll, currentInterval);
-            });
-        }
-        pollTimer = setTimeout(doPoll, currentInterval);
-    /* ]]> */
-    </script>
+    <div class="links bottom"><a href="/">[刷新]</a> <a href="/menu">[菜单]</a></div>
 {% endblock %}
