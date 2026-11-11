@@ -8,8 +8,8 @@
         {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
         <form method="post" action="/rename">
             <span class="label">当前昵称: {{ saved_username }}</span>
-            <input type="text" name="new_name" size="12" maxlength="12" />
-            <input type="submit" value="保存" />
+            <input type="text" class="txt" name="new_name" size="12" maxlength="12" />
+            <input type="submit" class="btn" value="保存" />
         </form>
         <div class="tip">只改显示的昵称，登录账号不变。</div>
     </div>

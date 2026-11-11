@@ -1,12 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
 {% block title %}在线用户{% endblock %}
-{% block css %}
-{{ ui.item_css() }}
-{% endblock %}
-{% block dark_css %}
-{{ ui.item_dark_css() }}
-{% endblock %}
 {% block body %}
 {{ ui.header("在线用户 (" ~ users|length ~ "人)") }}
 
@@ -16,9 +10,9 @@
         {% else %}
             {% for u in users %}
             <div class="item">
-                <span class="item-title">{{ u.nickname }}</span>
+                {{ u.nickname }}
                 <span class="item-meta">({{ u.account }})</span>
-                {% if u.is_me %} <span class="action-at" style="font-size:small;">[我]</span> {% endif %}
+                {% if u.is_me %} <span class="item-meta">[我]</span> {% endif %}
             </div>
             {% endfor %}
         {% endif %}

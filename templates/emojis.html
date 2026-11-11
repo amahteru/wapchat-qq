@@ -2,9 +2,8 @@
 {% import "_macros.html" as ui %}
 {% block title %}颜文字{% endblock %}
 {% block css %}
-        .kmj-list { padding: 0.2em; text-align: center; }
-        .kmj-list input { height: auto; margin: 2px; padding: 2px 4px; border-color: #999999; font-size: small; font-weight: normal; }
-{{ ui.pager_css() }}
+        .kmj-list { text-align: center; }
+        .kmj { margin: 0.2em; padding: 0.1em 0.2em; border: 1px solid #999999; background-color: #cccccc; color: #000000; font-size: small; cursor: pointer; }
 {% endblock %}
 {% block body %}
 {{ ui.header("颜文字 (" ~ page ~ "/" ~ total_pages ~ ")") }}
@@ -12,12 +11,12 @@
     <form method="post" action="/emojis?page={{ page }}">
         <div class="input-area">
             {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
-            <input type="text" name="message" value="{{ draft }}" size="14" maxlength="200" />
-            <input type="submit" name="send" value="发送" />
+            <input type="text" class="txt" name="message" value="{{ draft }}" size="14" maxlength="200" />
+            <input type="submit" class="btn" name="send" value="发送" />
             <div class="tip">点颜文字加到输入框，可以连续加几个再发送。</div>
         </div>
-        <div class="kmj-list">
-            {% for kmj in emojis %}<input type="submit" name="add" value="{{ kmj }}" />{% endfor %}
+        <div class="panel kmj-list">
+            {% for kmj in emojis %}<input type="submit" name="add" value="{{ kmj }}" class="kmj" />{% endfor %}
         </div>
     </form>
 

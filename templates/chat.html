@@ -1,16 +1,9 @@
 {% extends "base.html" %}
-{% import "_macros.html" as ui %}
 {% block css %}
-{{ ui.msg_css() }}
-        #chat { padding: 0 0.2em; }
         .online { font-weight: normal; color: #009900; }
-        .msg-title { overflow: hidden; margin-bottom: 2px; }
+        .msg-title { overflow: hidden; }
         .msg-title b { float: left; }
         .msg-actions { float: right; }
-        .bottom { padding: 0.2em; }
-{% endblock %}
-{% block dark_css %}
-{{ ui.msg_dark_css() }}
 {% endblock %}
 {% block body %}
     <h2>WapChat QQ <a href="/online" class="online">({{ online_count }}在线)</a>
@@ -20,29 +13,29 @@
     <div class="input-area">
         {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
         <form method="post" action="/">
-            <input type="text" name="message" value="{{ draft }}" size="14" maxlength="200" />
-            <input type="submit" value="发送" />
+            <input type="text" class="txt" name="message" value="{{ draft }}" size="14" maxlength="200" />
+            <input type="submit" class="btn" value="发送" />
         </form>
         <div class="links"><a href="/">[刷新]</a> <a href="/upload">[上传]</a> <a href="/emojis">[颜文字]</a></div>
     </div>
 
-    <div id="chat">
+    <div class="panel">
         {% for msg in history|reverse %}
         <div class="msg">
             <div class="msg-title">
-                <b>{{ msg.sender_title }}:</b>
+                <b>{{ msg.sender_title }}</b>
                 {% if msg.pure_sender %}
                 <span class="msg-actions">
-                    <a href="/?at={{ msg.pure_sender|urlencode }}" class="action-at">[@]</a>
+                    <a href="/?at={{ msg.pure_sender|urlencode }}">[@]</a>
                     <a href="/?reply={{ msg.id }}" class="action-reply">[回]</a>
                 </span>
                 {% endif %}
             </div>
-            <div style="clear:both;">{{ msg.text | safe }}</div>
+            <div>{{ msg.text | safe }}</div>
         </div>
         {% endfor %}
         {% if not history %}<div class="msg">暂无消息。</div>{% endif %}
     </div>
 
-    <div class="links bottom"><a href="/">[刷新]</a> <a href="/menu">[菜单]</a></div>
+    <div class="panel links"><a href="/">[刷新]</a> <a href="/menu">[菜单]</a></div>
 {% endblock %}

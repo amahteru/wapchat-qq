@@ -8,8 +8,8 @@
     <div class="input-area">
         <form action="{{ action }}" method="get">
             <span class="label">{{ label }}:</span>
-            <input type="text" name="q" value="{{ q }}" size="12" />
-            <input type="submit" value="搜索" />
+            <input type="text" class="txt" name="q" value="{{ q }}" size="12" />
+            <input type="submit" class="btn" value="搜索" />
         </form>
     </div>
 {% endmacro %}
@@ -21,41 +21,11 @@
         {% endif %}
         <form action="{{ action }}" method="get">
             {% if q %}<input type="hidden" name="q" value="{{ q }}" />{% endif %}
-            <input type="text" name="page" value="{{ page }}" size="3" /> / {{ total_pages }}
-            <input type="submit" value="跳" />
+            <input type="text" class="txt" name="page" value="{{ page }}" size="3" /> / {{ total_pages }}
+            <input type="submit" class="btn" value="跳" />
         </form>
         {% if page < total_pages %}
             <a href="{{ action }}?page={{ page + 1 }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">[下一页]</a>
         {% endif %}
     </div>
-{% endmacro %}
-
-{% macro pager_css() %}
-        .nav { padding: 0.3em; text-align: center; }
-        .nav form { display: inline; }
-        .nav a { text-decoration: none; }
-{% endmacro %}
-
-{% macro msg_css() %}
-        .msg { border-bottom: 1px dashed #cccccc; padding: 0.2em 0; line-height: 1.3; word-wrap: break-word; color: #333333; }
-        .action-at { text-decoration: none; }
-        .action-reply { color: #ff6600; text-decoration: none; }
-        .reply-text { color: #ff6600; font-size: small; }
-        .msg-title { font-size: small; }
-{% endmacro %}
-
-{% macro msg_dark_css() %}
-        .msg { border-bottom: 1px dashed #333333 !important; color: #999999 !important; }
-{% endmacro %}
-
-{% macro item_css() %}
-        .item { border-bottom: 1px dashed #cccccc; padding: 0.3em 0; line-height: 1.3; word-wrap: break-word; }
-        .item-title { font-weight: bold; color: #000000; }
-        .item-meta { font-size: small; color: #666666; }
-{% endmacro %}
-
-{% macro item_dark_css() %}
-        .item { border-bottom: 1px dashed #333333 !important; }
-        .item-title { color: #cccccc !important; }
-        .item-meta { color: #999999 !important; }
 {% endmacro %}

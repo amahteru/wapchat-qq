@@ -1,34 +1,18 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
 {% block title %}群网盘{% endblock %}
-{% block css %}
-{{ ui.item_css() }}
-        .item-meta { margin-top: 2px; }
-        .download { float: right; font-weight: bold; }
-{{ ui.pager_css() }}
-{% endblock %}
-{% block dark_css %}
-{{ ui.item_dark_css() }}
-{% endblock %}
 {% block body %}
 {{ ui.header("群网盘") }}
 {{ ui.search_bar("/drive", q, "搜索文件名或上传者") }}
 
     <div class="panel">
-        {% if not files %}
-            <div class="item">暂无文件。</div>
-        {% else %}
-            {% for f in files %}
-            <div class="item">
-                <div class="item-title">{{ f.filename }}</div>
-                <div class="item-meta">
-                    上传者: {{ f.uploader }} | 大小: {{ f.size }}<br/>
-                    时间: {{ f.upload_time }}
-                    <a href="{{ f.link }}" class="download">[下载]</a>
-                </div>
-            </div>
-            {% endfor %}
-        {% endif %}
+        {% for f in files %}
+        <div class="msg">
+            <div class="msg-title"><b>{{ f.uploader }} {{ f.upload_time }}</b></div>
+            <div>{{ f.filename }} ({{ f.size }}) <a href="{{ f.link }}">[下载]</a></div>
+        </div>
+        {% endfor %}
+        {% if not files %}<div class="msg">暂无文件。</div>{% endif %}
     </div>
 
 {{ ui.pager("/drive", page, total_pages, q) }}

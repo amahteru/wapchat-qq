@@ -1,9 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
 {% block title %}上传{% endblock %}
-{% block css %}
-        input[type="file"] { display: block; margin-bottom: 0.2em; }
-{% endblock %}
 {% block body %}
 {{ ui.header("上传") }}
 
@@ -11,16 +8,16 @@
         {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
         <form method="post" action="/upload/image" enctype="multipart/form-data">
             <span class="label">发图片:</span>
-            <input type="file" name="image" accept="image/*" />
-            <input type="submit" value="发送图片" />
+            <input type="file" class="file" name="image" accept="image/*" />
+            <input type="submit" class="btn" value="发送图片" />
         </form>
     </div>
 
     <div class="input-area">
         <form method="post" action="/upload/file" enctype="multipart/form-data">
             <span class="label">发文件 (最大15MB):</span>
-            <input type="file" name="file" />
-            <input type="submit" value="发送文件" />
+            <input type="file" class="file" name="file" />
+            <input type="submit" class="btn" value="发送文件" />
         </form>
     </div>
 

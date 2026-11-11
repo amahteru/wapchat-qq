@@ -12,7 +12,7 @@
             </refresh>
         </onevent>
         <p>
-            <b>WapChatQQ({{ online_count }}在线)</b> <a href="#menu">[菜单]</a><br/>
+            <b>WapChat QQ({{ online_count }}在线)</b> <a href="#menu">[菜单]</a><br/>
             --------<br/>
             {% if notice %}{{ notice }}<br/>{% endif %}
             发言:<input name="message" type="text" emptyok="true" format="*M"/><br/>

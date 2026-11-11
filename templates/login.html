@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}登录{% endblock %}
 {% block css %}
-        .field { margin-bottom: 0.3em; }
+        .field { margin-bottom: 0.2em; }
 {% endblock %}
 {% block body %}
     <h2>WapChat QQ</h2>
@@ -11,18 +11,18 @@
         <form method="post" action="/login">
             <div class="field">
                 <span class="label">账号(字母/数字/下划线):</span>
-                <input type="text" name="account" size="16" maxlength="15" />
+                <input type="text" class="txt" name="account" size="16" maxlength="15" />
             </div>
             <div class="field">
                 <span class="label">密码:</span>
-                <input type="password" name="password" size="16" />
+                <input type="password" class="txt" name="password" size="16" />
             </div>
             <div class="field">
                 <span class="label">申请理由(仅注册时填):</span>
-                <input type="text" name="reason" size="16" maxlength="60" />
+                <input type="text" class="txt" name="reason" size="16" maxlength="60" />
             </div>
-            <input type="submit" name="login_btn" value="登录" />
-            <input type="submit" name="register_btn" value="注册" />
+            <input type="submit" class="btn" name="login_btn" value="登录" />
+            <input type="submit" class="btn" name="register_btn" value="注册" />
         </form>
     </div>
 {% endblock %}

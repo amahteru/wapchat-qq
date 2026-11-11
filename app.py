@@ -1,4 +1,5 @@
 import base64
+import functools
 import datetime
 import hashlib
 import hmac
@@ -104,6 +105,22 @@ def inject_theme():
     return {"theme": request.cookies.get("nokia_theme", "light")}
 
 
+def login_required(view_or_url=None):
+    login_url = view_or_url if isinstance(view_or_url, str) else "/login"
+
+    def decorate(view):
+        @functools.wraps(view)
+        def wrapper(*args, **kwargs):
+            account = get_active_account()
+            if not account:
+                return redirect(login_url)
+            return view(account, *args, **kwargs)
+
+        return wrapper
+
+    return decorate if isinstance(view_or_url, str) else decorate(view_or_url)
+
+
 def take_notice():
     return next(iter(get_flashed_messages()), None)
 
@@ -152,9 +169,8 @@ def logout():
 
 
 @app.route("/history", methods=["GET"])
-def view_history():
-    if not get_active_account():
-        return redirect(url_for("login_page"))
+@login_required
+def view_history(account):
 
     per_page = MESSAGES_PER_PAGE
     q = request.args.get("q", "").strip()
@@ -171,10 +187,8 @@ def view_history():
 
 
 @app.route("/online", methods=["GET"])
-def view_online_users():
-    account = get_active_account()
-    if not account:
-        return redirect(url_for("login_page"))
+@login_required
+def view_online_users(account):
 
     get_online_count()
 
@@ -196,10 +210,8 @@ EMOJIS_PER_PAGE = 30
 
 
 @app.route("/emojis", methods=["GET", "POST"])
-def view_emojis():
-    account = get_active_account()
-    if not account:
-        return redirect(url_for("login_page"))
+@login_required
+def view_emojis(account):
 
     if request.method == "POST":
         message = request.form.get("message", "")
@@ -235,17 +247,14 @@ def toggle_theme():
 
 
 @app.route("/menu")
-def menu_page():
-    if not get_active_account():
-        return redirect(url_for("login_page"))
+@login_required
+def menu_page(account):
     return render_template("menu.html")
 
 
 @app.route("/rename", methods=["GET", "POST"])
-def rename_page():
-    account = get_active_account()
-    if not account:
-        return redirect(url_for("login_page"))
+@login_required
+def rename_page(account):
 
     if request.method == "POST":
         new_name, error = set_nickname(account, request.form.get("new_name", ""))
@@ -259,9 +268,8 @@ def rename_page():
 
 
 @app.route("/upload")
-def upload_page():
-    if not get_active_account():
-        return redirect(url_for("login_page"))
+@login_required
+def upload_page(account):
     return render_template("upload.html", notice=take_notice())
 
 
@@ -271,10 +279,8 @@ def back_to_upload(message):
 
 
 @app.route("/upload/image", methods=["POST"])
-def upload_image():
-    account = get_active_account()
-    if not account:
-        return redirect(url_for("login_page"))
+@login_required
+def upload_image(account):
 
     file = request.files.get("image")
     if not file or file.filename == "":
@@ -299,7 +305,7 @@ def upload_image():
 
         add_chat_message(
             "网页",
-            f"[网页-{html.escape(location)}]{html.escape(username)}: [图片] <a href='/view_image?b64={img_id}' class='action-at'>[查看]</a>",
+            f"[网页-{html.escape(location)}]{html.escape(username)}: [图片] <a href='/view_image?b64={img_id}'>[查看]</a>",
             username,
             "[图片]",
             qq_msg_id=qq_msg_id,
@@ -313,10 +319,8 @@ def upload_image():
 
 
 @app.route("/upload/file", methods=["POST"])
-def upload_file():
-    account = get_active_account()
-    if not account:
-        return redirect(url_for("login_page"))
+@login_required
+def upload_file(account):
 
     file = request.files.get("file")
     if not file or file.filename == "":
@@ -373,9 +377,8 @@ def upload_file():
 
 
 @app.route("/drive", methods=["GET"])
-def view_drive():
-    if not get_active_account():
-        return redirect(url_for("login_page"))
+@login_required
+def view_drive(account):
 
     per_page = 20
     q = request.args.get("q", "").strip()
@@ -424,10 +427,8 @@ def wml_index_no_slash():
 
 
 @app.route("/wml/", methods=["GET", "POST"])
-def wml_index():
-    account = get_active_account()
-    if not account:
-        return redirect("/wml/login")
+@login_required("/wml/login")
+def wml_index(account):
 
     notice = take_notice()
     if request.method == "POST":
@@ -459,10 +460,8 @@ def wml_index():
 
 
 @app.route("/wml/rename_wml", methods=["POST"])
-def wml_rename():
-    account = get_active_account()
-    if not account:
-        return redirect("/wml/login")
+@login_required("/wml/login")
+def wml_rename(account):
 
     _, error = set_nickname(account, request.form.get("new_name", ""))
     if error:
@@ -471,10 +470,8 @@ def wml_rename():
 
 
 @app.route("/", methods=["GET", "POST"])
-def index():
-    account = get_active_account()
-    if not account:
-        return redirect(url_for("login_page"))
+@login_required
+def index(account):
 
     if request.method == "POST":
         return send_and_redirect(account, request.form.get("message", ""))
@@ -532,10 +529,8 @@ def file_link(file_id, name):
 
 
 @app.route("/view_image")
-def view_image():
-    account = get_active_account()
-    if not account:
-        return "请先登录。", 403
+@login_required
+def view_image(account):
 
     img_doc = images_collection.find_one({"_id": request.args.get("b64")})
     if not img_doc:
@@ -544,9 +539,8 @@ def view_image():
 
 
 @app.route("/download/<file_id>/<path:filename>")
-def download_web_file(file_id, filename):
-    if not get_active_account():
-        return "请先登录。", 403
+@login_required
+def download_web_file(account, file_id, filename):
 
     file_doc = files_collection.find_one({"_id": file_id})
     if not file_doc:
@@ -555,9 +549,8 @@ def download_web_file(file_id, filename):
 
 
 @app.route("/qqfile/<path:file_name>")
-def download_qq_file(file_name):
-    if not get_active_account():
-        return "请先登录。", 403
+@login_required
+def download_qq_file(account, file_name):
 
     file_url = request.args.get("url")
     if not file_url:

@@ -1,13 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
 {% block title %}历史记录{% endblock %}
-{% block css %}
-{{ ui.msg_css() }}
-{{ ui.pager_css() }}
-{% endblock %}
-{% block dark_css %}
-{{ ui.msg_dark_css() }}
-{% endblock %}
 {% block body %}
 {{ ui.header("历史记录") }}
 {{ ui.search_bar("/history", q, "搜索消息或发送者") }}
@@ -18,7 +11,10 @@
         {% endif %}
 
         {% for msg in messages %}
-        <div class="msg"><b class="msg-title">{{ msg.sender_title }}</b><br/>{{ msg.text | safe }}</div>
+        <div class="msg">
+            <div class="msg-title"><b>{{ msg.sender_title }}</b></div>
+            <div>{{ msg.text | safe }}</div>
+        </div>
         {% endfor %}
     </div>
 

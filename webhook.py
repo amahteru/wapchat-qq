@@ -195,7 +195,7 @@ def receive_qq_msg():
 
             safe_text = re.sub(
                 r"\{IMG:([A-Za-z0-9_-]+)\}",
-                r'<a href="/view_image?b64=\1" class="action-at">[查看]</a>',
+                r'<a href="/view_image?b64=\1">[查看]</a>',
                 safe_text,
             )
             safe_text = highlight_mentions(safe_text)
