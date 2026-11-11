@@ -238,6 +238,12 @@ def search_query(q, *fields):
     return {"$or": [{field: pattern} for field in fields]}
 
 
+def format_size(size):
+    if size < 1024 * 1024:
+        return f"{max(1, round(size / 1024))}KB"
+    return f"{size / 1024 / 1024:.1f}MB"
+
+
 def has_banned_word(text):
     clean = re.sub(r"[^\w\u4e00-\u9fa5]", "", text).lower()
     return any(word.lower() in clean for word in BANNED_WORDS)

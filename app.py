@@ -36,6 +36,7 @@ from common import (
     chat_history,
     cleanup_old_files,
     files_collection,
+    format_size,
     get_online_count,
     images_collection,
     online_sessions,
@@ -163,7 +164,6 @@ def view_history():
     docs = list(
         chat_collection.find(query, {"_id": 0}).sort("id", -1).skip(skip).limit(per_page)
     )
-    docs.reverse()
 
     return render_template(
         "history.html", messages=docs, page=page, total_pages=total_pages, q=q
@@ -393,7 +393,7 @@ def view_drive():
                 "link": file_link(f["_id"], f["filename"]),
                 "filename": f["filename"],
                 "uploader": f["uploader"],
-                "size_mb": round(f["size"] / (1024 * 1024), 2),
+                "size": format_size(f["size"]),
                 "upload_time": dt.strftime("%Y-%m-%d %H:%M"),
             }
         )

@@ -1,25 +1,26 @@
 {% extends "base.html" %}
 {% block title %}登录{% endblock %}
 {% block css %}
-        .content { padding: 0.2em; }
-        .notice { color: #cc0000; font-size: medium; margin: 0 0 1px 0; font-weight: bold; line-height: 1.1; }
-        label { font-size: small; font-weight: bold; display: block; margin-top: 2px; margin-bottom: 2px; }
-        input[type="text"], input[type="password"] { width: 100%; height: 23px; border: 1px solid #000; margin: 0 0 0.3em 0; padding: 1px 2px; font-size: medium; display: block; }
-        input[type="submit"] { width: 100%; height: 27px; border: 1px solid #000; background-color: #cccccc; color: #000; font-weight: bold; font-size: medium; margin-top: 0.3em; cursor: pointer; display: block; }
-        input[type="submit"]:active { background-color: #999999; color: #fff; }
+        .field { margin-bottom: 0.3em; }
 {% endblock %}
 {% block body %}
     <h2>WapChat QQ</h2>
-    <div class="content">
+    <div class="panel">
         {% if error %}<div class="notice">{{ error }}</div>{% endif %}
-        {% if success %}<div class="notice" style="color: #009900;">{{ success }}</div>{% endif %}
-        <form method="POST" action="/login">
-            <label>账号(字母/数字/下划线):</label>
-            <input type="text" name="account" />
-            <label>密码:</label>
-            <input type="password" name="password" />
-            <label>申请理由(仅注册时填):</label>
-            <input type="text" name="reason" maxlength="60" />
+        {% if success %}<div class="notice">{{ success }}</div>{% endif %}
+        <form method="post" action="/login">
+            <div class="field">
+                <span class="label">账号(字母/数字/下划线):</span>
+                <input type="text" name="account" size="16" maxlength="15" />
+            </div>
+            <div class="field">
+                <span class="label">密码:</span>
+                <input type="password" name="password" size="16" />
+            </div>
+            <div class="field">
+                <span class="label">申请理由(仅注册时填):</span>
+                <input type="text" name="reason" size="16" maxlength="60" />
+            </div>
             <input type="submit" name="login_btn" value="登录" />
             <input type="submit" name="register_btn" value="注册" />
         </form>

@@ -13,6 +13,7 @@ from common import (
     chat_collection,
     files_collection,
     filter_emoji,
+    format_size,
     get_online_count,
     has_banned_word,
     images_collection,
@@ -263,10 +264,6 @@ def list_users(arg):
     return "\n".join(lines)
 
 
-def format_size(size):
-    return f"{size / 1024 / 1024:.1f}MB"
-
-
 def status_report():
     counts = {"active": 0, "pending": 0, "banned": 0}
     for u in users_db.values():
@@ -285,7 +282,7 @@ def status_report():
             f"网盘{files_collection.estimated_document_count()}个文件，共{format_size(files_size)}"
         )
         stats = files_collection.database.command("dbStats")
-        lines.append(f"数据库占用: {format_size(stats.get('storageSize', 0) + stats.get('indexSize', 0))} /512MB")
+        lines.append(f"数据库占用: {format_size(stats.get('storageSize', 0) + stats.get('indexSize', 0))}/512MB")
     except Exception as e:
         print(f"统计数据库用量失败: {e}")
     return "\n".join(lines)

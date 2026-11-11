@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
 {% block css %}
-        #chat { padding: 0 0.2em; }
 {{ ui.msg_css() }}
-{{ ui.form_css() }}
+        #chat { padding: 0 0.2em; }
+        .online { font-weight: normal; color: #009900; }
         .msg-title { overflow: hidden; margin-bottom: 2px; }
         .msg-title b { float: left; }
         .msg-actions { float: right; }
+        .bottom { padding: 0.2em; }
 {% endblock %}
 {% block dark_css %}
 {{ ui.msg_dark_css() }}
-{{ ui.form_dark_css() }}
 {% endblock %}
 {% block body %}
     <h2>WapChat QQ <a href="/online" class="online">({{ online_count }}在线)</a>

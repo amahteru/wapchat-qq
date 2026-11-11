@@ -1,22 +1,16 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
-{% block title %}改名{% endblock %}
-{% block css %}
-{{ ui.form_css() }}
-        .label { font-size: small; margin-bottom: 3px; }
-{% endblock %}
-{% block dark_css %}
-{{ ui.form_dark_css() }}
-{% endblock %}
+{% block title %}修改昵称{% endblock %}
 {% block body %}
 {{ ui.header("修改昵称") }}
 
     <div class="input-area">
         {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
-        <div class="label">当前昵称: {{ saved_username }} (不会改变登录账号)</div>
         <form method="post" action="/rename">
+            <span class="label">当前昵称: {{ saved_username }}</span>
             <input type="text" name="new_name" size="12" maxlength="12" />
             <input type="submit" value="保存" />
         </form>
+        <div class="tip">只改显示的昵称，登录账号不变。</div>
     </div>
 {% endblock %}

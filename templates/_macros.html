@@ -1,4 +1,3 @@
-
 {% macro header(title, back="返回聊天") %}
     <h2>{{ title }}
         <span class="back"><a href="/">[{{ back }}]</a></span>
@@ -6,11 +5,11 @@
 {% endmacro %}
 
 {% macro search_bar(action, q, label) %}
-    <div class="search-bar" style="padding: 0.2em;">
-        <form action="{{ action }}" method="GET" style="margin:0; padding:0;">
-            <span style="font-size: small;">{{ label }}:</span><br/>
-            <input type="text" name="q" value="{{ q }}" size="12" style="height: 18px; padding: 1px 2px; border: 1px solid #000; font-size: small; margin: 0;" />
-            <input type="submit" value="搜索" style="height: 22px; border: 1px solid #000; background-color: #cccccc; font-size: small; margin: 0; cursor: pointer;" />
+    <div class="input-area">
+        <form action="{{ action }}" method="get">
+            <span class="label">{{ label }}:</span>
+            <input type="text" name="q" value="{{ q }}" size="12" />
+            <input type="submit" value="搜索" />
         </form>
     </div>
 {% endmacro %}
@@ -18,38 +17,28 @@
 {% macro pager(action, page, total_pages, q="") %}
     <div class="nav">
         {% if page > 1 %}
-            <a href="{{ action }}?page={{ page - 1 }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">上一页</a>
+            <a href="{{ action }}?page={{ page - 1 }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">[上一页]</a>
         {% endif %}
-
-        <form action="{{ action }}" method="GET" style="display:inline; margin:0; padding:0; vertical-align:middle;">
-            {% if q %}
-            <input type="hidden" name="q" value="{{ q }}" />
-            {% endif %}
-            <input type="text" name="page" value="{{ page }}" style="width:28px; height:20px; text-align:center; padding:0; margin:0; border:1px solid #999; font-size:small; vertical-align:middle;" />
-
-            <span style="display:inline-block; vertical-align:middle; font-size:small; font-weight:normal;"> / {{ total_pages }}</span>
-
-            <input type="submit" value="跳" style="height:22px; border:1px solid #999; background:#cccccc; padding:0 5px; margin:0 0 0 2px; font-size:small; vertical-align:middle; cursor:pointer;" />
+        <form action="{{ action }}" method="get">
+            {% if q %}<input type="hidden" name="q" value="{{ q }}" />{% endif %}
+            <input type="text" name="page" value="{{ page }}" size="3" /> / {{ total_pages }}
+            <input type="submit" value="跳" />
         </form>
-
         {% if page < total_pages %}
-            <a href="{{ action }}?page={{ page + 1 }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">下一页</a>
+            <a href="{{ action }}?page={{ page + 1 }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">[下一页]</a>
         {% endif %}
     </div>
 {% endmacro %}
 
 {% macro pager_css() %}
-        .nav { padding: 0.3em; text-align: center; font-size: small; font-weight: bold; }
-        .nav a { color: #0000ff; text-decoration: none; padding: 0 5px; border: 1px solid #ccc; background: #cccccc; margin: 0 2px; display: inline-block; height: 22px; line-height: 20px; vertical-align: middle; }
-{% endmacro %}
-
-{% macro pager_dark_css() %}
-        .nav a { background: #333333 !important; border-color: #333333 !important; }
+        .nav { padding: 0.3em; text-align: center; }
+        .nav form { display: inline; }
+        .nav a { text-decoration: none; }
 {% endmacro %}
 
 {% macro msg_css() %}
-        .msg { border-bottom: 1px dashed #cccccc; padding: 0.2em 0; font-size: medium; line-height: 1.3; word-wrap: break-word; color: #333333; }
-        .action-at { color: #0000ff; text-decoration: none; }
+        .msg { border-bottom: 1px dashed #cccccc; padding: 0.2em 0; line-height: 1.3; word-wrap: break-word; color: #333333; }
+        .action-at { text-decoration: none; }
         .action-reply { color: #ff6600; text-decoration: none; }
         .reply-text { color: #ff6600; font-size: small; }
         .msg-title { font-size: small; }
@@ -60,7 +49,7 @@
 {% endmacro %}
 
 {% macro item_css() %}
-        .item { border-bottom: 1px dashed #cccccc; padding: 0.3em 0; font-size: medium; line-height: 1.3; word-wrap: break-word; }
+        .item { border-bottom: 1px dashed #cccccc; padding: 0.3em 0; line-height: 1.3; word-wrap: break-word; }
         .item-title { font-weight: bold; color: #000000; }
         .item-meta { font-size: small; color: #666666; }
 {% endmacro %}
@@ -69,21 +58,4 @@
         .item { border-bottom: 1px dashed #333333 !important; }
         .item-title { color: #cccccc !important; }
         .item-meta { color: #999999 !important; }
-{% endmacro %}
-
-{% macro form_css() %}
-        .input-area { padding: 0.2em; background-color: #ffffff; border-bottom: 2px solid #000; }
-        .input-area input[type="text"] { height: 21px; border: 1px solid #000; padding: 1px 2px; font-size: medium; }
-        .input-area input[type="submit"], .input-area input[type="file"] { height: 25px; border: 1px solid #000; background-color: #cccccc; color: #000; font-weight: bold; font-size: medium; }
-        .input-area input[type="submit"] { padding: 0 6px; }
-        .notice { color: #ff6600; font-size: medium; font-weight: bold; margin-bottom: 0.2em; }
-        .links { font-size: medium; margin-top: 0.2em; }
-        .links a { color: #0000ff; text-decoration: none; margin-right: 0.3em; }
-        .links.bottom { padding: 0.2em; }
-        .online { font-size: medium; font-weight: normal; color: #009900; }
-{% endmacro %}
-
-{% macro form_dark_css() %}
-        .input-area { background-color: #000000 !important; border-bottom: 2px solid #333333 !important; }
-        .notice { color: #ff9933 !important; }
 {% endmacro %}

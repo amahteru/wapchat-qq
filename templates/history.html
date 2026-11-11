@@ -1,16 +1,15 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
-{% block title %}历史{% endblock %}
+{% block title %}历史记录{% endblock %}
 {% block css %}
 {{ ui.msg_css() }}
 {{ ui.pager_css() }}
 {% endblock %}
 {% block dark_css %}
 {{ ui.msg_dark_css() }}
-{{ ui.pager_dark_css() }}
 {% endblock %}
 {% block body %}
-{{ ui.header("历史") }}
+{{ ui.header("历史记录") }}
 {{ ui.search_bar("/history", q, "搜索消息或发送者") }}
 
     <div class="panel">
