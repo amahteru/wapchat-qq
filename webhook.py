@@ -284,8 +284,8 @@ def receive_qq_msg():
             safe_filename = html.escape(file_name)
             if file_url:
                 encoded_url = urllib.parse.quote(file_url, safe="")
-                encoded_name = urllib.parse.quote(file_name)
-                proxy_url = f"/api/download_qq_file?name={encoded_name}&url={encoded_url}&sig={sign_url(file_url)}"
+                encoded_name = urllib.parse.quote(file_name, safe="")
+                proxy_url = f"/qqfile/{encoded_name}?url={encoded_url}&amp;sig={sign_url(file_url)}"
                 file_html = f"<span style='color:#009900;'>[文件: {safe_filename}]</span> <a href='{proxy_url}'>[下载]</a>"
             else:
                 file_html = f"<span style='color:#009900;'>[文件: {safe_filename}]</span> <span style='color:#666666; font-size:small;'>(无法获取下载链接)</span>"

@@ -2,6 +2,8 @@ import base64
 import datetime
 import hashlib
 import hmac
+import mimetypes
+import os
 import html
 import re
 import time
@@ -85,6 +87,15 @@ app.secret_key = SECRET_KEY
 
 
 MESSAGES_PER_PAGE = 10
+
+
+@app.after_request
+def no_cache(response):
+    if response.mimetype in ("text/html", "text/vnd.wap.wml"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "Thu, 01 Jan 1970 00:00:00 GMT"
+    return response
 
 
 @app.context_processor
@@ -346,7 +357,7 @@ def upload_file():
 
         add_chat_message(
             "网页",
-            f"[网页-{html.escape(location)}]{html.escape(username)}: <span style='color:#009900;'>[文件: {html.escape(filename)}]</span> <a href='/api/download_file?id={file_id}'>[下载]</a>",
+            f"[网页-{html.escape(location)}]{html.escape(username)}: <span style='color:#009900;'>[文件: {html.escape(filename)}]</span> <a href='{file_link(file_id, filename)}'>[下载]</a>",
             username,
             f"[文件: {filename}]",
             qq_msg_id=qq_msg_id,
@@ -377,7 +388,7 @@ def view_drive():
         dt = datetime.datetime.fromtimestamp(f["time"], tz=TZ_UTC8)
         display_files.append(
             {
-                "_id": f["_id"],
+                "link": file_link(f["_id"], f["filename"]),
                 "filename": f["filename"],
                 "uploader": f["uploader"],
                 "size_mb": round(f["size"] / (1024 * 1024), 2),
@@ -390,38 +401,8 @@ def view_drive():
     )
 
 
-def is_mobile_device(req):
-    accept_header = req.headers.get("Accept", "").lower()
-    if "text/vnd.wap.wml" in accept_header:
-        return True
-    if req.headers.get("X-Wap-Profile") or req.headers.get("Profile"):
-        return True
-    ua = req.headers.get("User-Agent", "").lower()
-    mobile_keywords = [
-        "nokia",
-        "symbian",
-        "ucweb",
-        "wap",
-        "motorola",
-        "mot-",
-        "sonyericsson",
-        "blackberry",
-        "j2me",
-        "midp",
-        "cldc",
-        "up.browser",
-        "netfront",
-        "obigo",
-        "teleca",
-        "openwave",
-    ]
-    return any(k in ua for k in mobile_keywords)
-
-
 @app.route("/wml/login", methods=["GET", "POST"])
 def wml_login_page():
-    if not is_mobile_device(request):
-        return redirect(url_for("login_page"))
     return login_view(
         "/wml/login",
         "/wml/",
@@ -442,8 +423,6 @@ def wml_index_no_slash():
 
 @app.route("/wml/", methods=["GET", "POST"])
 def wml_index():
-    if not is_mobile_device(request):
-        return redirect(url_for("index"))
     account = get_active_account()
     if not account:
         return redirect("/wml/login")
@@ -520,8 +499,34 @@ def index():
 app.add_url_rule("/webhook", view_func=receive_qq_msg, methods=["POST"])
 
 
-def attachment(name):
-    return f"attachment; filename*=UTF-8''{urllib.parse.quote(name)}"
+OLD_PHONE_TYPES = {
+    ".jar": "application/java-archive",
+    ".jad": "text/vnd.sun.j2me.app-descriptor",
+    ".sis": "application/vnd.symbian.install",
+    ".sisx": "x-epoc/x-sisx-app",
+    ".amr": "audio/amr",
+    ".3gp": "video/3gpp",
+    ".mid": "audio/midi",
+    ".mp3": "audio/mpeg",
+    ".txt": "text/plain",
+}
+
+
+def file_type(name):
+    ext = os.path.splitext(name)[1].lower()
+    return OLD_PHONE_TYPES.get(ext) or mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+
+def download_headers(name):
+    ascii_name = name.encode("ascii", "replace").decode().replace("?", "_").replace('"', "_")
+    return {
+        "Content-Type": file_type(name),
+        "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{urllib.parse.quote(name)}",
+    }
+
+
+def file_link(file_id, name):
+    return f"/download/{file_id}/{urllib.parse.quote(name, safe='')}"
 
 
 @app.route("/view_image")
@@ -540,35 +545,23 @@ def view_image():
     return Response(base64.b64decode(img_doc["data"]), mimetype="image/jpeg")
 
 
-@app.route("/api/download_file")
-def download_web_file():
-    account = get_active_account()
-    if not account:
+@app.route("/download/<file_id>/<path:filename>")
+def download_web_file(file_id, filename):
+    if not get_active_account():
         return "请先登录。", 403
-
-    file_id = request.args.get("id")
-    if not file_id:
-        return "文件链接无效。", 400
 
     file_doc = files_collection.find_one({"_id": file_id})
     if not file_doc:
         return "文件已被清理或不存在。", 404
-    return Response(
-        file_doc["data"],
-        mimetype="application/octet-stream",
-        headers={"Content-Disposition": attachment(file_doc["filename"])},
-    )
+    return Response(file_doc["data"], headers=download_headers(file_doc["filename"]))
 
 
-@app.route("/api/download_qq_file")
-def download_qq_file():
-    account = get_active_account()
-    if not account:
+@app.route("/qqfile/<path:file_name>")
+def download_qq_file(file_name):
+    if not get_active_account():
         return "请先登录。", 403
 
     file_url = request.args.get("url")
-    file_name = request.args.get("name", "未知文件")
-
     if not file_url:
         return "下载链接无效。", 400
 
@@ -584,11 +577,7 @@ def download_qq_file():
         if req.status_code != 200:
             return "下载失败，文件可能已过期。", 500
 
-        response_headers = {
-            "Content-Disposition": attachment(file_name),
-            "Content-Type": req.headers.get("Content-Type", "application/octet-stream"),
-        }
-
+        response_headers = download_headers(file_name)
         if "Content-Length" in req.headers:
             response_headers["Content-Length"] = req.headers["Content-Length"]
 

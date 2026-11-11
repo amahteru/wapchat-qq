@@ -26,7 +26,7 @@
                     上传者: {{ f.uploader }} | 大小: {{ f.size_mb }}MB <br/>
                     时间: {{ f.upload_time }}
                     <span style="float: right;">
-                        <a href="/api/download_file?id={{ f._id }}" class="download-btn">[下载]</a>
+                        <a href="{{ f.link }}" class="download-btn">[下载]</a>
                     </span>
                 </div>
             </div>
