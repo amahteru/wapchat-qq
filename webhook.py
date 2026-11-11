@@ -5,7 +5,6 @@ import io
 import json
 import os
 import re
-import time
 import urllib.parse
 
 from flask import request, jsonify
@@ -44,11 +43,11 @@ def format_duration(seconds):
     hours, rest = divmod(rest, 3600)
     minutes = -(-rest // 60)
     parts = [f"{days}天" if days else "", f"{hours}小时" if hours else "", f"{minutes}分钟" if minutes else ""]
-    return "".join(parts) or "0分钟"
+    return "".join(parts)
 
 
 def receive_qq_msg():
-    client_ip = request.remote_addr or ""
+    client_ip = request.remote_addr
 
     authorized = hmac.compare_digest(
         request.args.get("token", "").encode("utf-8"),
@@ -215,7 +214,7 @@ def receive_qq_msg():
             )
 
     elif data.get("post_type") == "notice" and data.get("group_id") == TARGET_GROUP_ID:
-        event_time = data.get("time", int(time.time()))
+        event_time = data["time"]
 
         if event_time <= APP_START_TIME:
             return jsonify({"status": "ignored_historical_notice"})

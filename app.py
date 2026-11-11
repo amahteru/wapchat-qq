@@ -535,11 +535,7 @@ def view_image():
     if not account:
         return "请先登录。", 403
 
-    img_id = request.args.get("b64")
-    if not img_id:
-        return "图片链接无效。", 400
-
-    img_doc = images_collection.find_one({"_id": img_id})
+    img_doc = images_collection.find_one({"_id": request.args.get("b64")})
     if not img_doc:
         return "图片已被清理或不存在。", 404
     return Response(base64.b64decode(img_doc["data"]), mimetype="image/jpeg")

@@ -30,9 +30,6 @@ def get_qq_name(qq):
 
 
 def get_qq_by_name(target_name):
-    if not target_name:
-        return None
-
     if target_name in ["全体成员", "all", "全体"]:
         return "all"
 

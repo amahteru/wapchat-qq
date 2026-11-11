@@ -84,7 +84,7 @@ def get_active_account():
 
 
 def clean_nickname(raw):
-    name = re.sub(r"\[.*?\]", "", filter_emoji((raw or "").strip()))
+    name = re.sub(r"\[.*?\]", "", filter_emoji(raw.strip()))
     name = re.sub(r"[\[\]\s]+", " ", name).strip()[:12].strip()
     if not name:
         return None, "昵称不能为空，也不能全是特殊字符。"
@@ -138,7 +138,7 @@ def verify_password(account, password):
 def register_account(account, password, reason):
     global last_register_time
 
-    reason = re.sub(r"\s+", " ", filter_emoji(reason or "")).strip()
+    reason = re.sub(r"\s+", " ", filter_emoji(reason)).strip()
     if not reason:
         return False, "注册需要填写申请理由。"
     if len(reason) > MAX_REASON_LENGTH:
@@ -410,4 +410,4 @@ def nickname(account):
 
 def get_real_ip(req):
     forwarded = req.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-    return forwarded or req.remote_addr or ""
+    return forwarded or req.remote_addr

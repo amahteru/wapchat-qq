@@ -113,9 +113,6 @@ SECRET_KEY = load_secret_key()
 
 
 def filter_emoji(text):
-    if not text:
-        return text
-
     text = emoji.demojize(text, language="zh")
     text = re.sub(r":([^:]+):", r"[\1]", text)
 
@@ -134,12 +131,8 @@ def read_data_lines(filename):
 
 def load_qq_faces():
     with open(os.path.join(BASE_DIR, "face_config.json"), encoding="utf-8") as f:
-        faces = json.load(f).get("sysface", [])
-    return {
-        int(face["QSid"]): face["QDes"].lstrip("/")
-        for face in faces
-        if face.get("QSid") and face.get("QDes")
-    }
+        faces = json.load(f)["sysface"]
+    return {int(face["QSid"]): face["QDes"].lstrip("/") for face in faces}
 
 
 QQ_FACES = load_qq_faces()
@@ -173,31 +166,22 @@ def save_chat_message(msg_dict):
         print(f"写入云端聊天记录失败: {e}")
 
 
-def cleanup_old_images(max_limit=500):
-    try:
-        img_count = images_collection.count_documents({})
-        if img_count > max_limit:
-            delete_count = img_count - max_limit
-            old_images = (
-                images_collection.find({}, {"_id": 1})
-                .sort("time", 1)
-                .limit(delete_count)
-            )
-            old_ids = [img["_id"] for img in old_images]
+MAX_IMAGES = 500
 
-            if old_ids:
-                images_collection.delete_many({"_id": {"$in": old_ids}})
-                print(
-                    f"[自动清理] 图片超过{max_limit}张，已清理最旧的{len(old_ids)}张。"
-                )
+
+def cleanup_old_images():
+    try:
+        delete_count = images_collection.count_documents({}) - MAX_IMAGES
+        if delete_count > 0:
+            old_ids = [img["_id"] for img in images_collection.find({}, {"_id": 1}).sort("time", 1).limit(delete_count)]
+            images_collection.delete_many({"_id": {"$in": old_ids}})
+            print(f"[自动清理] 图片超过{MAX_IMAGES}张，已清理最旧的{len(old_ids)}张。")
     except Exception as e:
         print(f"图床自动清理失败: {e}")
 
 
 def to_jpeg_b64(source, max_width, max_height, quality):
-    img = Image.open(source)
-    if img.mode != "RGB":
-        img = img.convert("RGB")
+    img = Image.open(source).convert("RGB")
     img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
 
     img_io = io.BytesIO()

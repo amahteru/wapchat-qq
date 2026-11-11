@@ -42,7 +42,7 @@ def highlight_mentions(safe_text):
 def send_web_message(account, raw_text, req):
     global global_last_send_time
 
-    msg_text = filter_emoji((raw_text or "").strip())
+    msg_text = filter_emoji(raw_text.strip())
     if not msg_text:
         return None
 
